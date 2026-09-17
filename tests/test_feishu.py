@@ -1,0 +1,107 @@
+import httpx
+import pytest
+
+from files_to_feishu.config import Settings
+from files_to_feishu.feishu import FeishuClient, parse_wiki_url
+from files_to_feishu.models import UncertainWrite, UserError
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://company.feishu.cn/wiki/abc",
+        "https://feishu.cn.evil.test/wiki/abc",
+        "https://company.feishu.cn/docx/abc",
+        "https://user@company.feishu.cn/wiki/abc",
+    ],
+)
+def test_invalid_target_urls_are_rejected(url):
+    with pytest.raises(UserError):
+        parse_wiki_url(url)
+
+
+def test_a_timed_out_document_creation_is_never_blindly_retried():
+    writes = []
+
+    def handle(request):
+        if "tenant_access_token" in request.url.path:
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "token", "expire": 7200}
+            )
+        writes.append(request)
+        raise httpx.ReadTimeout("lost response", request=request)
+
+    client = FeishuClient(
+        Settings(feishu_app_id="app", feishu_app_secret="secret"),
+        httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    with pytest.raises(UncertainWrite):
+        client.request("POST", "/docx/v1/documents", json={"title": "sample"})
+    assert len(writes) == 1
+
+
+def test_rate_limit_refresh_pagination_and_original_bytes(tmp_path, monkeypatch):
+    import hashlib
+    from email.parser import BytesParser
+    from email.policy import default
+
+    monkeypatch.setattr("files_to_feishu.feishu.time.sleep", lambda _: None)
+    tokens, calls, uploaded = [], [], []
+    payload = b"%PDF- original bytes \x00\xff\n"
+    source = tmp_path / "source.pdf"
+    source.write_bytes(payload)
+
+    def handle(request):
+        path = request.url.path
+        if "tenant_access_token" in path:
+            tokens.append(1)
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": f"token{len(tokens)}", "expire": 7200}
+            )
+        calls.append(path)
+        if path.endswith("upload_all"):
+            multipart = BytesParser(policy=default).parsebytes(
+                b"Content-Type: "
+                + request.headers["content-type"].encode()
+                + b"\r\n\r\n"
+                + request.content
+            )
+            parts = {
+                p.get_param("name", header="content-disposition"): p.get_payload(decode=True)
+                for p in multipart.iter_parts()
+            }
+            assert parts["file"] == payload
+            assert parts["parent_node"] == b"file-block"
+            assert parts["parent_type"] == b"docx_file"
+            uploaded.append(parts["file"])
+            if len(uploaded) == 1:
+                return httpx.Response(429, json={"code": 99991400})
+            return httpx.Response(200, json={"code": 0, "data": {"file_token": "file"}})
+        if path.endswith("download"):
+            return httpx.Response(200, content=payload)
+        if path.endswith("blocks"):
+            if len(tokens) == 1:
+                return httpx.Response(200, json={"code": 99991663})
+            second = request.url.params.get("page_token") == "next"
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "items": [{"block_id": "second" if second else "first"}],
+                        "has_more": not second,
+                        "page_token": "next",
+                    },
+                },
+            )
+        raise AssertionError(path)
+
+    client = FeishuClient(
+        Settings(feishu_app_id="app", feishu_app_secret="secret"),
+        httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    assert client.upload("file-block", source, "file")["file_token"] == "file"
+    assert len(uploaded) == 2
+    assert client.download_digest("file") == hashlib.sha256(payload).hexdigest()
+    assert [b["block_id"] for b in client.blocks("doc")] == ["first", "second"]
+    assert len(tokens) == 2
