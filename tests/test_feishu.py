@@ -131,3 +131,25 @@ def test_download_retries_rate_limit_and_refreshes_token(monkeypatch):
     )
     assert client.download_digest("file") == hashlib.sha256(b"original").hexdigest()
     assert len(attempts) == 3
+
+
+def test_missing_scope_error_names_the_required_permission():
+    def handle(request):
+        if "tenant_access_token" in request.url.path:
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "token", "expire": 7200}
+            )
+        return httpx.Response(
+            400,
+            json={
+                "code": 99991672,
+                "msg": "Access denied. Required: [docx:document, docx:document:create]",
+            },
+        )
+
+    client = FeishuClient(
+        Settings(feishu_app_id="app", feishu_app_secret="secret"),
+        httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    with pytest.raises(UserError, match="docx:document.*发布"):
+        client.request("POST", "/docx/v1/documents", json={"title": "test"})

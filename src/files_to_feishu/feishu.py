@@ -107,6 +107,19 @@ class FeishuClient:
                 time.sleep(2**attempt)
                 continue
             if not response.is_success or code != 0:
+                if code == 99991672:
+                    scopes = sorted(
+                        set(
+                            re.findall(
+                                r"\b(?:docx|drive|wiki|docs):[a-z_:]+", str(body.get("msg", ""))
+                            )
+                        )
+                    )
+                    needed = "、".join(scopes) or "当前接口要求的应用权限"
+                    raise UserError(
+                        f"飞书缺少接口权限（code=99991672）：{needed}。"
+                        "请在开发者后台开通权限、发布应用版本并完成管理员审批后重试。"
+                    )
                 raise UserError(
                     f"飞书接口失败（HTTP {response.status_code}，code={code}）。"
                     "请检查应用接口权限、知识库成员权限及文件大小。"
