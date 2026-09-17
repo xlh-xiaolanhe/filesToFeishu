@@ -8,10 +8,9 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import Settings
-from .feishu import FeishuClient
+from .converters.pdf import DoclingParser, inspect_pdf
+from .integrations.feishu import FeishuClient, Publisher
 from .models import ParsedDocument, Target, UncertainWrite, UserError
-from .parser import DoclingParser, inspect_pdf
-from .publisher import Publisher
 from .store import ACTIVE, Store
 
 

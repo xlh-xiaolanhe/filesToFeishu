@@ -7,8 +7,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .config import Settings
-from .models import Target, UncertainWrite, UserError
+from ...config import Settings
+from ...models import Target, UncertainWrite, UserError
 
 BASE = "https://open.feishu.cn/open-apis"
 

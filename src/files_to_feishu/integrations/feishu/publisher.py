@@ -3,8 +3,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .feishu import FeishuClient
-from .models import ParsedDocument, Target, UncertainWrite, UserError
+from ...models import ParsedDocument, Target, UncertainWrite, UserError
+from .client import FeishuClient
 
 
 def text_blocks(text: str, kind: str = "text", level: int = 1) -> list[dict]:

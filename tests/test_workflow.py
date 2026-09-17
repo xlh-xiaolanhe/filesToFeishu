@@ -4,9 +4,9 @@ from fastapi.testclient import TestClient
 
 from files_to_feishu.app import create_app
 from files_to_feishu.config import Settings
+from files_to_feishu.converters.pdf import render_pages
 from files_to_feishu.models import Element, ParsedDocument
-from files_to_feishu.parser import render_pages
-from tests.test_publisher import MemoryFeishu
+from tests.integrations.feishu.test_publisher import MemoryFeishu
 
 
 def fixture_parser(source, assets, progress):

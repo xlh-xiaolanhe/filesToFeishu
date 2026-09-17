@@ -2,8 +2,8 @@ import pytest
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
 
+from files_to_feishu.converters.pdf.parser import from_layout, inspect_pdf, render_pages
 from files_to_feishu.models import UserError
-from files_to_feishu.parser import from_layout, inspect_pdf, render_pages
 
 
 def test_missing_text_is_reported_even_when_page_contains_an_image(tmp_path):

@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from files_to_feishu.parser import DoclingParser
-from tests.samples import make_sample
+from files_to_feishu.converters.pdf import DoclingParser
+from tests.converters.pdf.samples import make_sample
 
 
 @pytest.mark.parser

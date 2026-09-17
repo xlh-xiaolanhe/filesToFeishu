@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import Settings
-from .feishu import FeishuClient
+from .integrations.feishu import FeishuClient
 from .models import UserError
 from .service import JobService
 from .store import Store

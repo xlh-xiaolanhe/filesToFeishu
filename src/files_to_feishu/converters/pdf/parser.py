@@ -9,7 +9,7 @@ import pypdfium2 as pdfium
 from PIL import Image
 from pypdf import PdfReader
 
-from .models import Element, Notice, ParsedDocument, UserError
+from ...models import Element, Notice, ParsedDocument, UserError
 
 
 def inspect_pdf(source: Path, max_bytes: int, max_pages: int) -> list[str]:

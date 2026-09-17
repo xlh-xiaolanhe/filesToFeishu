@@ -14,4 +14,4 @@
 | feishu-document-writing | 参考图片占位、素材绑定和文件容器的接口调用顺序 | [源仓库](https://github.com/fan-sun/feishu-document-writing)，未复制或分发该项目代码 |
 | MinerU-Skill | 只用于方案比较，不作为运行依赖 | [集成说明](https://github.com/Nebutra/MinerU-Skill/blob/main/references/integrations.md) |
 
-应用接口层、任务日志和网页为本项目实现。测试 PDF 由 `tests/samples.py` 原创生成。代码许可与模型许可分别适用；重新分发依赖或模型时，应保留其原始许可和通知。
+应用接口层、任务日志和网页为本项目实现。测试 PDF 由 `tests/converters/pdf/samples.py` 原创生成。代码许可与模型许可分别适用；重新分发依赖或模型时，应保留其原始许可和通知。

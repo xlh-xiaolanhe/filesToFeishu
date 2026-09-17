@@ -7,7 +7,7 @@ import uvicorn
 
 from files_to_feishu.app import create_app
 from files_to_feishu.config import Settings
-from tests.test_publisher import MemoryFeishu
+from tests.integrations.feishu.test_publisher import MemoryFeishu
 
 if __name__ == "__main__":
     with TemporaryDirectory(prefix="pdf-browser-") as data:

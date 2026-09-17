@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from files_to_feishu.config import Settings
-from files_to_feishu.feishu import FeishuClient, parse_wiki_url
+from files_to_feishu.integrations.feishu import FeishuClient, parse_wiki_url
 from files_to_feishu.models import UncertainWrite, UserError
 
 
@@ -45,7 +45,7 @@ def test_rate_limit_refresh_pagination_and_original_bytes(tmp_path, monkeypatch)
     from email.parser import BytesParser
     from email.policy import default
 
-    monkeypatch.setattr("files_to_feishu.feishu.time.sleep", lambda _: None)
+    monkeypatch.setattr("files_to_feishu.integrations.feishu.client.time.sleep", lambda _: None)
     tokens, calls, uploaded = [], [], []
     payload = b"%PDF- original bytes \x00\xff\n"
     source = tmp_path / "source.pdf"
@@ -110,7 +110,7 @@ def test_rate_limit_refresh_pagination_and_original_bytes(tmp_path, monkeypatch)
 def test_download_retries_rate_limit_and_refreshes_token(monkeypatch):
     import hashlib
 
-    monkeypatch.setattr("files_to_feishu.feishu.time.sleep", lambda _: None)
+    monkeypatch.setattr("files_to_feishu.integrations.feishu.client.time.sleep", lambda _: None)
     attempts = []
 
     def handle(request):

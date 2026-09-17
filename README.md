@@ -2,7 +2,9 @@
 
 本地网页工具：解析单个文字型 PDF，预览后创建可编辑飞书文档，并保存为指定知识库页面的子页面。复杂区域保留图片，原 PDF 作为附件保存。
 
-当前状态：**v0.1 MVP 已交付**。本地离线解析、浏览器流程、模拟发布及真实飞书发布已验证；真实文档已归档到指定父页面，归档后正文、素材和原附件摘要核验通过，用户已确认转换效果。版本需求与计划见 [文档索引](docs/README.md)。
+当前状态：**v0.1.1 已交付**。PDF MVP 的本地离线解析、浏览器流程及真实飞书发布已验证；真实文档已归档到指定父页面，归档后正文、素材和原附件摘要核验通过，用户已确认转换效果。本版补齐使用文档与代码归档，版本需求与计划见 [文档索引](docs/README.md)。
+
+首次使用请看 [PDF 转飞书使用说明](docs/guides/pdf-to-feishu.md)。当前 v0.1.1 补充说明并按格式归档代码：功能入口见 [功能索引](docs/features/README.md)，源码与测试位置见 [PDF 功能档案](docs/features/pdf-to-feishu.md)，后续公众号等来源的接入方式见 [输入格式扩展说明](docs/architecture/input-formats.md)。
 
 ## 本地启动（macOS，Python 3.12）
 
@@ -66,7 +68,7 @@ uv run --extra parser pytest -m 'not parser and not live'
 RUN_PARSER_TESTS=1 uv run --extra parser pytest
 uv run --extra parser ruff check src tests scripts
 uv run --extra parser mypy
-uv run --extra parser python -m tests.samples
+uv run --extra parser python -m tests.converters.pdf.samples
 ```
 
 最后一条生成原创代表性样本 `output/samples/representative.pdf`，不包含用户数据。真实模型测试要求已准备 `.models`；测试会禁止网络连接并断言中英文文字、标题、列表、表格与图片保留。接口与任务测试使用模拟服务，不会向飞书创建文档。

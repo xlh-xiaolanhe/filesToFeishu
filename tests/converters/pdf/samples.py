@@ -1,4 +1,4 @@
-"""Original, deterministic samples authored for this project; no external document data."""
+"""Original PDF samples archived with their converter's regression tests."""
 
 from pathlib import Path
 

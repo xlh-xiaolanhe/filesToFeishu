@@ -3,8 +3,8 @@ import hashlib
 
 import pytest
 
+from files_to_feishu.integrations.feishu import Publisher
 from files_to_feishu.models import Element, ParsedDocument, Target, UncertainWrite, UserError
-from files_to_feishu.publisher import Publisher
 
 
 class MemoryFeishu:
@@ -189,7 +189,7 @@ def test_remote_content_change_and_wrong_parent_are_not_success(publishing, monk
     client, journal, publisher, args = publishing
     publisher().publish(*args)
     client.parent = "wrong"
-    monkeypatch.setattr("files_to_feishu.publisher.time.sleep", lambda _: None)
+    monkeypatch.setattr("files_to_feishu.integrations.feishu.publisher.time.sleep", lambda _: None)
     with pytest.raises(UserError, match="归档尚未确认"):
         publisher().publish(*args)
     for block in client.data.values():
