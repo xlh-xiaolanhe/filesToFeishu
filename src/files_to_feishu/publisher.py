@@ -41,11 +41,22 @@ class Publisher:
         self.save = save
         self.progress = progress
 
-    def effect(self, key: str, operation: Callable[[], dict]) -> dict:
+    def effect(
+        self,
+        key: str,
+        operation: Callable[[], dict],
+        reconcile: Callable[[], dict | None] | None = None,
+    ) -> dict:
         entry = self.journal.get(key)
         if entry:
             if entry["state"] == "done":
                 return entry["result"]
+            if reconcile is not None:
+                result = reconcile()
+                if result is not None:
+                    self.journal[key] = {"state": "done", "result": result}
+                    self.save(self.journal)
+                    return result
             raise UncertainWrite(
                 f"步骤 {key} 的上次写入结果不确定。已停止，避免重复写入；请检查远端文档。"
             )
@@ -101,6 +112,11 @@ class Publisher:
         token = uploaded.get("file_token")
         if not token:
             raise UncertainWrite("素材上传结果缺少文件标识。")
+
+        def reconcile_binding():
+            block = self.client.block(doc, block_id)
+            return {"block": block} if block.get(kind, {}).get("token") == token else None
+
         self.effect(
             key + ":bind",
             lambda: self.client.request(
@@ -109,6 +125,7 @@ class Publisher:
                 params={"document_revision_id": -1},
                 json={f"replace_{kind}": {"token": token}},
             ),
+            reconcile_binding,
         )
         return {"id": block_id, "kind": kind, "token": token, "root": created["block_id"]}
 
@@ -203,6 +220,20 @@ class Publisher:
         }
         self.save(self.journal)
         self.progress("archiving", "正在保存到目标知识库", document_id=doc)
+
+        def reconcile_move():
+            try:
+                node = self.client.node(doc, "docx")
+            except UserError:
+                return None
+            if (
+                node.get("space_id") == target.space_id
+                and node.get("parent_node_token") == target.node_token
+                and node.get("obj_token") == doc
+            ):
+                return {"wiki_token": node["node_token"]}
+            return None
+
         moved = self.effect(
             "move",
             lambda: self.client.request(
@@ -215,10 +246,15 @@ class Publisher:
                     "apply": False,
                 },
             ),
+            reconcile_move,
         )
         if moved.get("applied"):
             raise UserError("飞书只创建了迁入申请，尚未归档；请检查知识库编辑权限。")
         node = self.confirm_move(doc, target, moved)
+        self.progress("verifying", "核对归档后的正文与附件读取权限", document_id=doc)
+        self.verify(doc, expected, roots)
+        if self.client.download_digest(attachment["token"]) != digest:
+            raise UserError("归档后原附件摘要不一致，请核对知识库文档。")
         return {
             "document_id": doc,
             "wiki_token": node["node_token"],

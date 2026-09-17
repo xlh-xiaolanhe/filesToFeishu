@@ -169,13 +169,35 @@ class FeishuClient:
         )
 
     def download_digest(self, token: str) -> str:
-        try:
-            response = self.client.get(
-                f"{BASE}/drive/v1/medias/{token}/download",
-                headers={"Authorization": f"Bearer {self._token()}"},
-                follow_redirects=True,
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise UserError("无法下载原附件进行完整性核验，请检查素材下载权限。") from exc
-        return hashlib.sha256(response.content).hexdigest()
+        for attempt in range(4):
+            try:
+                response = self.client.get(
+                    f"{BASE}/drive/v1/medias/{token}/download",
+                    headers={"Authorization": f"Bearer {self._token()}"},
+                    follow_redirects=True,
+                )
+                try:
+                    code = response.json().get("code")
+                except (ValueError, AttributeError):
+                    code = None
+                if code in {99991663, 99991664, 99991665, 99991668} and attempt < 3:
+                    self.expires = 0
+                    continue
+                if response.status_code == 429 or response.status_code >= 500 or code == 99991400:
+                    if attempt < 3:
+                        time.sleep(2**attempt)
+                        continue
+                response.raise_for_status()
+                if code not in {None, 0}:
+                    raise UserError(f"附件下载失败（code={code}），请检查素材下载权限。")
+                return hashlib.sha256(response.content).hexdigest()
+            except httpx.TransportError as exc:
+                if attempt < 3:
+                    time.sleep(2**attempt)
+                    continue
+                raise UserError("附件下载连接失败，请检查网络后重试。") from exc
+            except httpx.HTTPStatusError as exc:
+                raise UserError(
+                    f"附件下载失败（HTTP {exc.response.status_code}），请检查素材下载权限。"
+                ) from exc
+        raise UserError("附件下载未完成，请稍后重试。")

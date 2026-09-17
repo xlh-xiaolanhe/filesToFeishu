@@ -33,7 +33,7 @@ function preview() {
     for(const item of job.preview.elements.filter(e=>e.page===page)) {
       if(item.kind==="image") {const figure=element("figure"), img=element("img");img.src=asset(item.asset);img.alt=item.text;img.loading="lazy";figure.append(img,element("figcaption",item.text));content.append(figure);}
       else if(item.kind==="table") {const table=element("table"); for(const row of item.rows){const tr=element("tr");for(const cell of row)tr.append(element("td",cell));table.append(tr);}content.append(table);}
-      else if(["bullet","ordered"].includes(item.kind)){const list=element(item.kind==="ordered"?"ol":"ul");list.append(element("li",item.text));content.append(list);}
+      else if(["bullet","ordered"].includes(item.kind)){const tag=item.kind==="ordered"?"OL":"UL";let list=content.lastElementChild;if(list?.tagName!==tag){list=element(tag.toLowerCase());content.append(list);}list.append(element("li",item.text));}
       else content.append(element(item.kind==="heading"?"h3":"p",item.text));
     }
     right.append(content);pair.append(left,right);$("preview").append(pair);

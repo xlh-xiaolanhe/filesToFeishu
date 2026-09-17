@@ -105,3 +105,29 @@ def test_rate_limit_refresh_pagination_and_original_bytes(tmp_path, monkeypatch)
     assert client.download_digest("file") == hashlib.sha256(payload).hexdigest()
     assert [b["block_id"] for b in client.blocks("doc")] == ["first", "second"]
     assert len(tokens) == 2
+
+
+def test_download_retries_rate_limit_and_refreshes_token(monkeypatch):
+    import hashlib
+
+    monkeypatch.setattr("files_to_feishu.feishu.time.sleep", lambda _: None)
+    attempts = []
+
+    def handle(request):
+        if "tenant_access_token" in request.url.path:
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "fresh", "expire": 7200}
+            )
+        attempts.append(1)
+        if len(attempts) == 1:
+            return httpx.Response(429, json={"code": 99991400})
+        if len(attempts) == 2:
+            return httpx.Response(401, json={"code": 99991663})
+        return httpx.Response(200, content=b"original")
+
+    client = FeishuClient(
+        Settings(feishu_app_id="app", feishu_app_secret="secret"),
+        httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    assert client.download_digest("file") == hashlib.sha256(b"original").hexdigest()
+    assert len(attempts) == 3

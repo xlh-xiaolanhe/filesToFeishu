@@ -33,6 +33,7 @@ def test_representative_pdf_offline(tmp_path, monkeypatch):
     )
     assert any(e.kind == "image" and e.page == 1 for e in parsed.elements)
     assert any(n.page == 2 and "表格" in n.reason for n in parsed.notices)
+    assert any(n.page == 2 and "公式" in n.reason for n in parsed.notices)
     for element in parsed.elements:
         if element.kind == "image":
             assert (tmp_path / "assets" / element.asset).stat().st_size > 0

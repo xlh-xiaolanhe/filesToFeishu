@@ -1,4 +1,5 @@
 import os
+import re
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -75,11 +76,16 @@ def from_layout(layout: dict[str, Any], texts: list[str], output: Path) -> Parse
         return node
 
     def mark_children(item):
+        captions = {c["$ref"] for c in item.get("captions", []) + item.get("footnotes", [])}
         for child in item.get("children", []):
             ref = child["$ref"]
             if ref not in seen:
-                seen.add(ref)
-                mark_children(resolve(ref))
+                node = resolve(ref)
+                if ref in captions or node.get("label") in {"caption", "footnote"}:
+                    walk(node)
+                else:
+                    seen.add(ref)
+                    mark_children(node)
 
     def walk(item):
         nonlocal assets
@@ -123,7 +129,11 @@ def from_layout(layout: dict[str, Any], texts: list[str], output: Path) -> Parse
                 for p in provenance:
                     fallback_pages[p["page_no"]] = "跨页复杂区域，已保留整页图片"
                 return
-            if label in {"title", "section_header"}:
+            if label == "formula" or (
+                len(element.text) < 120 and re.search(r"[=∑∫√]", element.text)
+            ):
+                reason = "公式或疑似公式以图片保留，请核对"
+            elif label in {"title", "section_header"}:
                 element.kind = "heading"
                 element.level = min(max(int(item.get("level", 1)), 1), 6)
             elif label == "list_item":
@@ -150,8 +160,6 @@ def from_layout(layout: dict[str, Any], texts: list[str], output: Path) -> Parse
                         element.rows = grid
             elif label == "picture":
                 element.kind = "image"
-            elif label == "formula":
-                reason = "公式以图片保留"
             elif not element.text.strip():
                 reason = "无法可靠转换的区域，已保留图片"
 

@@ -65,3 +65,17 @@ def test_invalid_upload_and_cross_origin_mutation_are_rejected(tmp_path):
         )
         assert client.get("/api/health", headers={"Host": "evil.test"}).status_code == 400
         assert client.get("/").headers["content-security-policy"]
+
+
+def test_diagnostics_keep_traceback_and_redact_credentials(tmp_path, caplog):
+    app = create_app(Settings(data_dir=tmp_path, feishu_app_secret="secret-value"))
+    service = app.state.service
+    job = service.store.create("test.pdf", "digest")
+    try:
+        raise RuntimeError("model failed with secret-value")
+    except RuntimeError as exc:
+        service.fail(job["id"], exc)
+    service.close()
+    assert "model failed" in caplog.text
+    assert "test_diagnostics_keep_traceback" in caplog.text
+    assert "secret-value" not in caplog.text

@@ -1,6 +1,8 @@
 import hashlib
 import logging
+import re
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -176,7 +178,15 @@ class JobService:
             if isinstance(exc, UserError)
             else (f"处理失败（{type(exc).__name__}），请检查本地依赖、模型和任务文件后重试。")
         )
-        logging.getLogger(__name__).warning("job=%s error_type=%s", job_id, type(exc).__name__)
+        diagnostic = "".join(traceback.format_exception(exc))
+        for secret in (
+            self.settings.feishu_app_secret.get_secret_value(),
+            getattr(self.client, "token", ""),
+        ):
+            if secret:
+                diagnostic = diagnostic.replace(secret, "[REDACTED]")
+        diagnostic = re.sub(r"(?i)Bearer\s+[^\s'\"]+", "Bearer [REDACTED]", diagnostic)
+        logging.getLogger(__name__).warning("job=%s\n%s", job_id, diagnostic[-8000:])
         self.store.update(
             job_id,
             status="needs_review" if isinstance(exc, UncertainWrite) else "failed",

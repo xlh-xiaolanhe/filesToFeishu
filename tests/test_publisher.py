@@ -198,3 +198,40 @@ def test_remote_content_change_and_wrong_parent_are_not_success(publishing, monk
             break
     with pytest.raises(UserError, match="核对失败"):
         publisher().verify("doc1", **journal["verified"]["result"])
+
+
+@pytest.mark.parametrize("lost_step", ["bind", "move"])
+def test_known_object_is_reconciled_after_lost_write_response(publishing, lost_step):
+    client, journal, publisher, args = publishing
+    original = client.request
+    lost = []
+
+    def request(method, path, **kwargs):
+        result = original(method, path, **kwargs)
+        matches = method == "PATCH" if lost_step == "bind" else path.endswith("move_docs_to_wiki")
+        if matches and not lost:
+            lost.append(path)
+            raise UncertainWrite("response lost after write")
+        return result
+
+    client.request = request
+    with pytest.raises(UncertainWrite):
+        publisher().publish(*args)
+    client.request = original
+    assert publisher().publish(*args)["wiki_token"] == "child"
+    assert client.created == 1
+
+
+def test_attachment_is_verified_again_after_archiving(publishing):
+    client, journal, publisher, args = publishing
+    original = client.download_digest
+
+    def download(token):
+        if client.target:
+            raise UserError("归档后无读取权限")
+        return original(token)
+
+    client.download_digest = download
+    with pytest.raises(UserError, match="归档后"):
+        publisher().publish(*args)
+    assert journal["move"]["state"] == "done"
