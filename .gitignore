@@ -1,0 +1,15 @@
+.venv/
+.env
+.idea/
+.data/
+.models/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+output/
+tmp/
+.playwright-cli/
