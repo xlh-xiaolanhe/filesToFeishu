@@ -107,6 +107,19 @@ class FeishuClient:
                 time.sleep(2**attempt)
                 continue
             if not response.is_success or code != 0:
+                if code == 131006 and path.startswith("/wiki/"):
+                    reason = str(body.get("msg", ""))
+                    if "wiki space permission denied" in reason:
+                        detail = "当前应用缺少知识库成员权限"
+                    elif "node permission" in reason or "parent node permission" in reason:
+                        detail = "当前应用缺少目标父页面的容器编辑权限"
+                    else:
+                        detail = "当前应用缺少知识库或父页面的访问/编辑权限"
+                    raise UserError(
+                        f"知识库权限拒绝（code=131006）：{detail}。"
+                        "请将应用/机器人加入知识库可编辑成员，并授予目标父页面创建子页面权限。"
+                        "这与开发者后台的接口权限不同；配置后可续接当前任务。"
+                    )
                 if code == 99991672:
                     scopes = sorted(
                         set(

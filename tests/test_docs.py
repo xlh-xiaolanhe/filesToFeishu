@@ -13,7 +13,14 @@ def test_document_links_and_iteration_status_are_consistent():
         for link in re.findall(r"\]\(([^)]+)\)", text):
             if "://" not in link and not link.startswith("#"):
                 assert (path.parent / link.split("#")[0]).is_file(), (path, link)
+    statuses = []
     for relative in ("requirements/v0.1-mvp.md", "plans/v0.1-mvp.md"):
         text = (ROOT / "docs" / relative).read_text(encoding="utf-8")
-        assert "| 状态 | 实施中 |" in text
-    assert "| v0.1-mvp | 实施中 |" in (ROOT / "docs/README.md").read_text(encoding="utf-8")
+        status = re.search(r"\| 状态 \| (规划中|实施中|已交付) \|", text)
+        assert status, relative
+        statuses.append(status.group(1))
+    assert len(set(statuses)) == 1
+    assert f"| v0.1-mvp | {statuses[0]} |" in (ROOT / "docs/README.md").read_text(encoding="utf-8")
+    assert f"- 状态：{statuses[0]}" in (ROOT / "docs/validation/v0.1-mvp.md").read_text(
+        encoding="utf-8"
+    )

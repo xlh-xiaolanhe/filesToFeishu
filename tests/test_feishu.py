@@ -153,3 +153,21 @@ def test_missing_scope_error_names_the_required_permission():
     )
     with pytest.raises(UserError, match="docx:document.*发布"):
         client.request("POST", "/docx/v1/documents", json={"title": "test"})
+
+
+def test_wiki_membership_error_is_distinct_from_api_scope():
+    def handle(request):
+        if "tenant_access_token" in request.url.path:
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "token", "expire": 7200}
+            )
+        return httpx.Response(
+            400, json={"code": 131006, "msg": "permission denied: wiki space permission denied"}
+        )
+
+    client = FeishuClient(
+        Settings(feishu_app_id="app", feishu_app_secret="secret"),
+        httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    with pytest.raises(UserError, match="知识库成员权限.*接口权限不同"):
+        client.request("POST", "/wiki/v2/spaces/space/nodes/move_docs_to_wiki", json={})
