@@ -56,3 +56,30 @@ def test_rejects_encrypted_scanned_and_corrupt_files(tmp_path, pdf_bytes):
     source.write_bytes(b"not a PDF")
     with pytest.raises(UserError, match="有效 PDF"):
         inspect_pdf(source, 1024 * 1024, 100)
+
+
+def test_table_children_are_not_duplicated_as_paragraphs(tmp_path):
+    Image.new("RGB", (600, 800), "white").save(tmp_path / "page-1.png")
+    prov = [{"page_no": 1, "bbox": {"l": 0, "t": 0, "r": 100, "b": 100}}]
+    layout = {
+        "body": {"children": [{"$ref": "#/tables/0"}]},
+        "tables": [
+            {
+                "self_ref": "#/tables/0",
+                "label": "table",
+                "prov": prov,
+                "children": [{"$ref": "#/texts/0"}],
+                "data": {
+                    "num_rows": 1,
+                    "num_cols": 1,
+                    "table_cells": [
+                        {"start_row_offset_idx": 0, "start_col_offset_idx": 0, "text": "Cell"}
+                    ],
+                },
+            }
+        ],
+        "texts": [{"self_ref": "#/texts/0", "label": "text", "text": "Cell", "prov": prov}],
+    }
+    parsed = from_layout(layout, ["Cell"], tmp_path)
+    assert len(parsed.elements) == 1
+    assert parsed.elements[0].rows == [["Cell"]]

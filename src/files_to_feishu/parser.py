@@ -74,6 +74,13 @@ def from_layout(layout: dict[str, Any], texts: list[str], output: Path) -> Parse
             node = node[int(key)] if isinstance(node, list) else node[key]
         return node
 
+    def mark_children(item):
+        for child in item.get("children", []):
+            ref = child["$ref"]
+            if ref not in seen:
+                seen.add(ref)
+                mark_children(resolve(ref))
+
     def walk(item):
         nonlocal assets
         ref = item.get("self_ref", "")
@@ -171,7 +178,9 @@ def from_layout(layout: dict[str, Any], texts: list[str], output: Path) -> Parse
                 )
             elements.append(element)
         # Table/picture children are represented by the enclosing grid or crop.
-        if label not in {"table", "picture"}:
+        if label in {"table", "picture"}:
+            mark_children(item)
+        else:
             for child in item.get("children", []):
                 walk(resolve(child["$ref"]))
 
