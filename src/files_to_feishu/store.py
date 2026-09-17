@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,12 +15,19 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         with self.connect() as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, data TEXT NOT NULL)"
+            )
 
+    @contextmanager
     def connect(self):
         conn = sqlite3.connect(self.path, timeout=15)
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def create(self, filename: str, digest: str) -> dict:
         job = {
@@ -81,6 +89,8 @@ class Store:
         for job in self.list():
             if job["status"] in ACTIVE:
                 self.update(
-                    job["id"], status="needs_review", progress="任务已中断",
+                    job["id"],
+                    status="needs_review",
+                    progress="任务已中断",
                     error="上次运行中断。请核对任务；已解析任务可点击重试，写入前会检查远端状态。",
                 )
