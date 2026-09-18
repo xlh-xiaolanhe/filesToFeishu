@@ -18,7 +18,9 @@ function enable() {
   $("publish").disabled = !job?.parsed || active.has(job?.status) || !health?.feishu_configured || !$("confirmed").checked || unreviewed || !!document.querySelector('.code-editor[data-dirty="true"]');
   $("publish").disabled ||= savingCode;
   $("history").disabled = savingCode;
-  document.querySelectorAll(".code-editor button, .code-editor textarea, .code-editor select, .convert-code").forEach(node=>node.disabled=savingCode || job?.status!=="ready" || job?.content_locked);
+  const codeLocked = savingCode || job?.status !== "ready" || job?.content_locked;
+  document.querySelectorAll(".code-editor button, .code-editor select, .convert-code").forEach(node => node.disabled = codeLocked);
+  document.querySelectorAll(".code-editor textarea").forEach(node => node.readOnly = codeLocked);
   $("publish").textContent = job?.status === "succeeded" ? "核对并打开已有文档" : (["failed","needs_review"].includes(job?.status) ? "核对状态并重试" : "保存到飞书");
   $("convert").disabled = savingCode || active.has(job?.status);
   $("target").disabled = !!job?.document_id || active.has(job?.status);
@@ -27,18 +29,88 @@ function enable() {
 function element(tag, text, className) { const node=document.createElement(tag); if(text !== undefined) node.textContent=text; if(className)node.className=className; return node; }
 function asset(name) { return `/api/jobs/${job.id}/assets/${encodeURIComponent(name)}`; }
 function codeEditor(item, index) {
-  const draftKey=`${job.id}:${index}`, draft=codeDrafts.get(draftKey);
-  const editor=element("div",undefined,"code-editor"), input=element("textarea"), language=element("select"), save=element("button","保存代码校对","secondary");
-  input.value=draft?.text ?? (item.kind==="code"?item.text:""); input.maxLength=20000; input.spellcheck=false; input.setAttribute("aria-label",`代码片段 ${index+1}`);
-  input.rows=Math.min(24,Math.max(4,input.value.split("\n").length+1));
-  for(const [value,label] of [["plaintext","纯文本 / 其他语言"],["javascript","JavaScript"],["typescript","TypeScript"]]){const option=element("option",label);option.value=value;language.append(option);}
-  language.value=draft?.language || item.language || "plaintext";language.setAttribute("aria-label","代码语言");save.type="button";
-  if(draft)editor.dataset.dirty="true";
-  function dirty(){codeDrafts.set(draftKey,{text:input.value,language:language.value});editor.dataset.dirty="true";$("confirmed").checked=false;enable();}
-  input.addEventListener("input",dirty);language.addEventListener("change",dirty);
-  save.addEventListener("click",async()=>{savingCode=true;enable();try{await post(`/api/jobs/${job.id}/code/${index}`,{text:input.value,language:language.value});codeDrafts.delete(draftKey);editor.dataset.dirty="false";painted="";$("confirmed").checked=false;message("error","");await refresh();}catch(error){message("error",error.message);}finally{savingCode=false;enable();}});
-  const cancel=element("button","取消本段修改","secondary");cancel.type="button";cancel.addEventListener("click",()=>{codeDrafts.delete(draftKey);painted="";preview();enable();});
-  editor.append(input,language,save,cancel);return editor;
+  const draftKey = `${job.id}:${index}`, draft = codeDrafts.get(draftKey);
+  const editor = element("div", undefined, "code-editor");
+  const toolbar = element("div", undefined, "code-toolbar");
+  const input = element("textarea"), language = element("select");
+  const save = element("button", "保存", "code-action code-save");
+  const cancel = element("button", "撤销", "code-action code-cancel");
+  const body = element("div", undefined, "code-body");
+  const gutter = element("div", undefined, "code-gutter"), numbers = element("div");
+  gutter.setAttribute("aria-hidden", "true");
+  gutter.append(numbers);
+  input.value = draft?.text ?? (item.kind === "code" ? item.text : "");
+  input.maxLength = 20000;
+  input.spellcheck = false;
+  input.wrap = "off";
+  input.setAttribute("aria-label", `代码片段 ${index + 1}`);
+  input.setAttribute("autocapitalize", "off");
+  input.setAttribute("autocomplete", "off");
+  for (const [value, label] of [["plaintext", "纯文本"], ["javascript", "JavaScript"], ["typescript", "TypeScript"]]) {
+    const option = element("option", label);
+    option.value = value;
+    language.append(option);
+  }
+  language.value = draft?.language || item.language || "plaintext";
+  language.setAttribute("aria-label", "代码语言");
+  save.type = cancel.type = "button";
+  save.title = "保存代码及校对结果";
+  cancel.title = "撤销本段未保存的修改";
+  if (draft) editor.dataset.dirty = "true";
+  function updateEditor() {
+    const lines = input.value.split("\n").length;
+    input.rows = Math.min(28, Math.max(2, lines));
+    numbers.textContent = Array.from({length: lines}, (_, i) => i + 1).join("\n");
+    numbers.style.transform = `translateY(-${input.scrollTop}px)`;
+    save.hidden = item.kind === "code" && item.code_reviewed && editor.dataset.dirty !== "true";
+    cancel.hidden = editor.dataset.dirty !== "true";
+  }
+  function dirty() {
+    codeDrafts.set(draftKey, {text: input.value, language: language.value});
+    editor.dataset.dirty = "true";
+    $("confirmed").checked = false;
+    updateEditor();
+    enable();
+  }
+  input.addEventListener("input", dirty);
+  language.addEventListener("change", dirty);
+  input.addEventListener("scroll", () => { numbers.style.transform = `translateY(-${input.scrollTop}px)`; });
+  input.addEventListener("keydown", event => {
+    if (event.key === "Tab" && !event.shiftKey && !input.readOnly) {
+      event.preventDefault();
+      input.setRangeText("  ", input.selectionStart, input.selectionEnd, "end");
+      dirty();
+    }
+  });
+  save.addEventListener("click", async () => {
+    savingCode = true;
+    enable();
+    try {
+      await post(`/api/jobs/${job.id}/code/${index}`, {text: input.value, language: language.value});
+      codeDrafts.delete(draftKey);
+      editor.dataset.dirty = "false";
+      painted = "";
+      $("confirmed").checked = false;
+      message("error", "");
+      await refresh();
+    } catch (error) {
+      message("error", error.message);
+    } finally {
+      savingCode = false;
+      enable();
+    }
+  });
+  cancel.addEventListener("click", () => {
+    codeDrafts.delete(draftKey);
+    painted = "";
+    preview();
+    enable();
+  });
+  toolbar.append(element("span", "代码块", "code-kind"), language, cancel, save);
+  body.append(gutter, input);
+  editor.append(toolbar, body);
+  updateEditor();
+  return editor;
 }
 function preview() {
   if (!job.preview || painted === job.id) return;
@@ -53,7 +125,20 @@ function preview() {
     for(const [index,item] of job.preview.elements.entries()) {
       if(item.page!==page)continue;
       if(item.kind==="image") {const figure=element("figure"), img=element("img");img.src=asset(item.asset);img.alt=item.text;img.loading="lazy";figure.append(img,element("figcaption",item.text));const convert=element("button","这是代码图片：改为代码片段","secondary convert-code");convert.type="button";convert.addEventListener("click",()=>{convert.hidden=true;codeDrafts.set(`${job.id}:${index}`,{text:"",language:"plaintext"});const editor=codeEditor(item,index);figure.append(editor);$("confirmed").checked=false;enable();});figure.append(convert);if(codeDrafts.has(`${job.id}:${index}`)){convert.hidden=true;figure.append(codeEditor(item,index));}content.append(figure);}
-      else if(item.kind==="code") {const section=element("section",undefined,"code-preview"), pre=element("pre"), code=element("code",item.text);pre.append(code);section.append(pre);if(item.asset){const reference=element("details"),img=element("img");reference.append(element("summary","查看原代码区域（仅用于校对）"));img.src=asset(item.asset);img.alt="原 PDF 代码区域";img.loading="lazy";reference.append(img);section.append(reference);}const editing=element("details");editing.open=!item.code_reviewed || codeDrafts.has(`${job.id}:${index}`);editing.append(element("summary",item.code_reviewed?"编辑代码或语言":"校对识别结果"),codeEditor(item,index));section.append(editing);content.append(section);}
+      else if (item.kind === "code") {
+        const section = element("section", undefined, "code-preview");
+        section.append(codeEditor(item, index));
+        if (item.asset) {
+          const reference = element("details", undefined, "code-reference"), img = element("img");
+          reference.append(element("summary", "查看原代码区域（仅用于校对）"));
+          img.src = asset(item.asset);
+          img.alt = "原 PDF 代码区域";
+          img.loading = "lazy";
+          reference.append(img);
+          section.append(reference);
+        }
+        content.append(section);
+      }
       else if(item.kind==="table") {const table=element("table"); for(const row of item.rows){const tr=element("tr");for(const cell of row)tr.append(element("td",cell));table.append(tr);}content.append(table);}
       else if(["bullet","ordered"].includes(item.kind)){const tag=item.kind==="ordered"?"OL":"UL";let list=content.lastElementChild;if(list?.tagName!==tag){list=element(tag.toLowerCase());content.append(list);}list.append(element("li",item.text));}
       else content.append(element(item.kind==="heading"?"h3":"p",item.text));
