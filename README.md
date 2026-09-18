@@ -12,10 +12,12 @@
 uv sync --extra parser --locked
 uv run --extra parser python scripts/download_models.py
 cp .env.example .env  # 仅在 .env 不存在时执行，已有配置不要覆盖
-uv run --extra parser files-to-feishu
+./start.sh
 ```
 
 打开 <http://127.0.0.1:8765>。模型只在准备阶段下载；解析时禁用 OCR、远程服务和生成式内容补写，并强制模型离线加载。不要使用多个 Uvicorn worker，也不要把本地服务暴露到公网。
+
+日常启动运行根目录的 [start.sh](start.sh)，macOS 也可以在访达中双击 [start.command](start.command)。两个入口都会定位到项目根目录并使用 `.venv`，无需先激活虚拟环境；保留终端窗口，按 `Ctrl+C` 停止。脚本不自动安装依赖、下载模型或覆盖 `.env`，首次使用仍需完成上面的准备。重复启动会被现有数据目录锁或端口占用检查拒绝，不会停止已经运行的实例。
 
 在 `.env` 中填写：
 
