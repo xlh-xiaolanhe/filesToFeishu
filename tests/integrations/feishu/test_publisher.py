@@ -160,6 +160,43 @@ def test_full_publish_preserves_editable_content_media_attachment_and_parent(pub
     assert client.created == 1
 
 
+def test_code_is_one_native_block_with_exact_text_and_verified_language(publishing):
+    from files_to_feishu.integrations.feishu.publisher import block_text
+
+    client, journal, publisher, args = publishing
+    text = "const obj = { height: 15 };\n  obj.heigth;\n" * 70
+    args[0].elements = [
+        Element(kind="code", page=1, text=text, language="javascript", code_reviewed=True)
+    ]
+    publisher().publish(*args)
+    blocks = [b for b in client.data.values() if b.get("block_type") == 14]
+    assert len(blocks) == 1
+    block = blocks[0]
+    assert block_text(block) == text
+    assert block["code"]["style"]["language"] == 30
+    assert not any(b.get("block_type") == 27 for b in client.data.values())
+    block["block_type"] = 2
+    with pytest.raises(UserError, match="代码块类型"):
+        publisher().verify("doc1", **journal["verified"]["result"])
+    block["block_type"] = 14
+    block["code"]["style"]["language"] = 63
+    with pytest.raises(UserError, match="代码块类型或语言"):
+        publisher().verify("doc1", **journal["verified"]["result"])
+    block["code"]["style"]["language"] = 30
+    block["code"]["elements"][0]["text_run"]["content"] = "lost indentation"
+    with pytest.raises(UserError, match="远端文字"):
+        publisher().verify("doc1", **journal["verified"]["result"])
+
+
+def test_unreviewed_code_is_rejected_before_remote_creation(publishing):
+    client, journal, publisher, args = publishing
+    args[0].elements = [Element(kind="code", page=1, text="let n = 1", code_origin="ocr")]
+    with pytest.raises(UserError, match="校对"):
+        publisher().publish(*args)
+    assert client.created == 0
+    assert journal == {}
+
+
 def test_known_upload_failure_resumes_without_duplicate_blocks(publishing):
     client, journal, publisher, args = publishing
     client.fail_upload = True

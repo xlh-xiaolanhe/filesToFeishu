@@ -73,7 +73,16 @@ def test_existing_serialized_job_remains_readable_after_reorganization(tmp_path)
     app = create_app(Settings(data_dir=tmp_path))
     service = app.state.service
     try:
-        assert service.parsed(job["id"]).model_dump() == legacy
+        parsed = service.parsed(job["id"])
+        assert (
+            parsed.model_dump(
+                exclude={"elements": {"__all__": {"language", "code_origin", "code_reviewed"}}}
+            )
+            == legacy
+        )
+        assert parsed.elements[0].language == "plaintext"
+        assert parsed.elements[0].code_origin == ""
+        assert parsed.elements[0].code_reviewed is False
         service.store.recover()
         persisted = service.store.get(job["id"])
         assert persisted["status"] == "succeeded"

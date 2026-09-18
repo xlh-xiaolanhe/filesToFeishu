@@ -12,7 +12,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import Settings
 from .integrations.feishu import FeishuClient
-from .models import UserError
+from .models import CodeLanguage, UserError
 from .service import JobService
 from .store import Store
 
@@ -24,8 +24,16 @@ class PublishRequest(BaseModel):
     title: str = Field(default="", max_length=200)
 
 
+class CodeRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)
+    language: CodeLanguage = "plaintext"
+
+
 def public(job: dict) -> dict:
-    return {k: v for k, v in job.items() if k not in {"journal", "app_id"}}
+    return {
+        **{k: v for k, v in job.items() if k not in {"journal", "app_id"}},
+        "content_locked": bool(job.get("journal") or job.get("document_id")),
+    }
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -131,7 +139,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/jobs/{job_id}/assets/{name}")
     def asset(job_id: str, name: str):
         get_job(job_id)
-        if not re.fullmatch(r"(?:page|figure)-\d+\.png", name):
+        if not re.fullmatch(r"(?:page|figure|code)-\d+\.png", name):
             raise HTTPException(404)
         path = service.folder(job_id) / "assets" / name
         if not path.is_file():
@@ -147,5 +155,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def publish(job_id: str, body: PublishRequest):
         get_job(job_id)
         return public(service.submit_publish(job_id, body.url, body.title))
+
+    @app.post("/api/jobs/{job_id}/code/{index}")
+    def save_code(job_id: str, index: int, body: CodeRequest):
+        get_job(job_id)
+        return public(service.save_code(job_id, index, body.text, body.language))
 
     return app

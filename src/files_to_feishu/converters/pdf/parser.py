@@ -10,6 +10,7 @@ from PIL import Image
 from pypdf import PdfReader
 
 from ...models import Element, Notice, ParsedDocument, UserError
+from .code import contains, extract_code_regions, language_of
 
 
 def inspect_pdf(source: Path, max_bytes: int, max_pages: int) -> list[str]:
@@ -60,7 +61,12 @@ def _plain(text: str) -> str:
     return "".join(c for c in text if c.isalnum())
 
 
-def from_layout(layout: dict[str, Any], texts: list[str], output: Path) -> ParsedDocument:
+def from_layout(
+    layout: dict[str, Any],
+    texts: list[str],
+    output: Path,
+    code_regions: list[Element] | None = None,
+) -> ParsedDocument:
     """Map Docling's public JSON document format to our preview/publish representation."""
     elements: list[Element] = []
     notices: list[Notice] = []
@@ -68,6 +74,8 @@ def from_layout(layout: dict[str, Any], texts: list[str], output: Path) -> Parse
     fallback_pages: dict[int, str] = {}
     assets = 0
     covered: dict[int, str] = {}
+    code_regions = code_regions or []
+    emitted_codes: set[int] = set()
 
     def resolve(ref):
         node: Any = layout
@@ -123,13 +131,31 @@ def from_layout(layout: dict[str, Any], texts: list[str], output: Path) -> Parse
             if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
                 fallback_pages[page] = "区域坐标无效，已保留整页图片"
                 return
+            for index, region in enumerate(code_regions):
+                if region.page == page and contains(region.bbox, bounds):
+                    covered[page] = covered.get(page, "") + item.get("text", "")
+                    if index not in emitted_codes:
+                        elements.append(region)
+                        covered[page] += region.text
+                        emitted_codes.add(index)
+                    # The region includes the text of enclosed picture/code children.
+                    for child in item.get("children", []):
+                        walk(resolve(child["$ref"]))
+                    return
             element = Element(kind="text", page=page, text=item.get("text", ""), bbox=bounds)
             reason = ""
             if len({p["page_no"] for p in provenance}) > 1:
                 for p in provenance:
                     fallback_pages[p["page_no"]] = "跨页复杂区域，已保留整页图片"
                 return
-            if label == "formula" or (
+            if label == "code" and element.text.strip():
+                element.kind = "code"
+                element.language = language_of(element.text)
+                element.code_origin = "pdf_text"
+                notices.append(
+                    Notice(page=page, reason="代码排版未完整恢复，请校对换行与缩进后保存")
+                )
+            elif label == "formula" or (
                 len(element.text) < 120 and re.search(r"[=∑∫√]", element.text)
             ):
                 reason = "公式或疑似公式以图片保留，请核对"
@@ -201,8 +227,32 @@ def from_layout(layout: dict[str, Any], texts: list[str], output: Path) -> Parse
                 walk(item)
 
     result: list[Element] = []
+    recovered_ids = {id(region) for region in code_regions}
     for page, native in enumerate(texts, 1):
-        page_elements = [e for e in elements if e.page == page]
+        # Docling may group list captions ahead of their code. Reinsert recovered
+        # snippets at their page position so each stays next to its own caption.
+        page_elements = [e for e in elements if e.page == page and id(e) not in recovered_ids]
+        for index, region in enumerate(code_regions):
+            if region.page == page:
+                preceding = [
+                    (i, e.bbox[3])
+                    for i, e in enumerate(page_elements)
+                    if e.kind != "image" and e.bbox and e.bbox[3] <= region.bbox[1] + 2
+                ]
+                following = [
+                    (i, e.bbox[1])
+                    for i, e in enumerate(page_elements)
+                    if e.kind != "image" and e.bbox and e.bbox[1] >= region.bbox[3] - 2
+                ]
+                if preceding:
+                    position = max(preceding, key=lambda pair: pair[1])[0] + 1
+                elif following:
+                    position = min(following, key=lambda pair: pair[1])[0]
+                else:
+                    position = len(page_elements)
+                page_elements.insert(position, region)
+                if index not in emitted_codes:
+                    covered[page] = covered.get(page, "") + region.text
         # Compare native characters, including text inside cropped regions. This is
         # a loss detector, not a claim of semantic or layout equivalence.
         extracted = covered.get(page, "")
@@ -216,6 +266,8 @@ def from_layout(layout: dict[str, Any], texts: list[str], output: Path) -> Parse
             reason = fallback_pages[page]
             notices.append(Notice(page=page, reason=reason))
             result.append(Element(kind="image", page=page, asset=f"page-{page}.png", text=reason))
+            # Keep recovered code editable even when unrelated page content needs fallback.
+            result.extend(e for e in page_elements if e.kind == "code")
         else:
             result.extend(page_elements)
     return ParsedDocument(
@@ -268,4 +320,8 @@ class DoclingParser:
         if str(converted.status.value) != "success":
             raise UserError("解析引擎未完整完成转换，请检查文件后重试。")
         progress("正在核对内容并整理预览")
-        return from_layout(converted.document.export_to_dict(), texts, output)
+        layout = converted.document.export_to_dict()
+        code_regions, notices = extract_code_regions(source, output, layout, progress)
+        parsed = from_layout(layout, texts, output, code_regions)
+        parsed.notices.extend(notices)
+        return parsed

@@ -1,6 +1,8 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 let job = null, health = null, timer = null, painted = "";
+let savingCode = false;
+const codeDrafts = new Map();
 const active = new Set(["queued", "parsing", "publishing", "verifying", "archiving"]);
 const labels = {queued:"排队",parsing:"解析中",ready:"待确认",publishing:"发布中",verifying:"核验中",archiving:"归档中",succeeded:"已保存",failed:"失败",needs_review:"待核对"};
 function message(id, text) { $(id).textContent = text; $(id).hidden = !text; }
@@ -12,14 +14,32 @@ async function api(path, options = {}) {
 }
 function post(path, data) { return api(path, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)}); }
 function enable() {
-  $("publish").disabled = !job?.parsed || active.has(job?.status) || !health?.feishu_configured || !$("confirmed").checked;
+  const unreviewed = job?.preview?.elements.some(e=>e.kind==="code" && !e.code_reviewed);
+  $("publish").disabled = !job?.parsed || active.has(job?.status) || !health?.feishu_configured || !$("confirmed").checked || unreviewed || !!document.querySelector('.code-editor[data-dirty="true"]');
+  $("publish").disabled ||= savingCode;
+  $("history").disabled = savingCode;
+  document.querySelectorAll(".code-editor button, .code-editor textarea, .code-editor select, .convert-code").forEach(node=>node.disabled=savingCode || job?.status!=="ready" || job?.content_locked);
   $("publish").textContent = job?.status === "succeeded" ? "核对并打开已有文档" : (["failed","needs_review"].includes(job?.status) ? "核对状态并重试" : "保存到飞书");
-  $("convert").disabled = active.has(job?.status);
+  $("convert").disabled = savingCode || active.has(job?.status);
   $("target").disabled = !!job?.document_id || active.has(job?.status);
   $("title").disabled = !!job?.document_id || active.has(job?.status);
 }
 function element(tag, text, className) { const node=document.createElement(tag); if(text !== undefined) node.textContent=text; if(className)node.className=className; return node; }
 function asset(name) { return `/api/jobs/${job.id}/assets/${encodeURIComponent(name)}`; }
+function codeEditor(item, index) {
+  const draftKey=`${job.id}:${index}`, draft=codeDrafts.get(draftKey);
+  const editor=element("div",undefined,"code-editor"), input=element("textarea"), language=element("select"), save=element("button","保存代码校对","secondary");
+  input.value=draft?.text ?? (item.kind==="code"?item.text:""); input.maxLength=20000; input.spellcheck=false; input.setAttribute("aria-label",`代码片段 ${index+1}`);
+  input.rows=Math.min(24,Math.max(4,input.value.split("\n").length+1));
+  for(const [value,label] of [["plaintext","纯文本 / 其他语言"],["javascript","JavaScript"],["typescript","TypeScript"]]){const option=element("option",label);option.value=value;language.append(option);}
+  language.value=draft?.language || item.language || "plaintext";language.setAttribute("aria-label","代码语言");save.type="button";
+  if(draft)editor.dataset.dirty="true";
+  function dirty(){codeDrafts.set(draftKey,{text:input.value,language:language.value});editor.dataset.dirty="true";$("confirmed").checked=false;enable();}
+  input.addEventListener("input",dirty);language.addEventListener("change",dirty);
+  save.addEventListener("click",async()=>{savingCode=true;enable();try{await post(`/api/jobs/${job.id}/code/${index}`,{text:input.value,language:language.value});codeDrafts.delete(draftKey);editor.dataset.dirty="false";painted="";$("confirmed").checked=false;message("error","");await refresh();}catch(error){message("error",error.message);}finally{savingCode=false;enable();}});
+  const cancel=element("button","取消本段修改","secondary");cancel.type="button";cancel.addEventListener("click",()=>{codeDrafts.delete(draftKey);painted="";preview();enable();});
+  editor.append(input,language,save,cancel);return editor;
+}
 function preview() {
   if (!job.preview || painted === job.id) return;
   painted=job.id; $("empty").hidden=true; $("preview").replaceChildren();
@@ -30,8 +50,10 @@ function preview() {
     left.append(element("div","原 PDF","column-label")); right.append(element("div","转换预览","column-label"));
     const image=element("img",undefined,"source-image");image.src=asset(job.preview.page_images[page-1]);image.alt=`原文第 ${page} 页`;image.loading="lazy";left.append(image);
     const content=element("div",undefined,"converted");
-    for(const item of job.preview.elements.filter(e=>e.page===page)) {
-      if(item.kind==="image") {const figure=element("figure"), img=element("img");img.src=asset(item.asset);img.alt=item.text;img.loading="lazy";figure.append(img,element("figcaption",item.text));content.append(figure);}
+    for(const [index,item] of job.preview.elements.entries()) {
+      if(item.page!==page)continue;
+      if(item.kind==="image") {const figure=element("figure"), img=element("img");img.src=asset(item.asset);img.alt=item.text;img.loading="lazy";figure.append(img,element("figcaption",item.text));const convert=element("button","这是代码图片：改为代码片段","secondary convert-code");convert.type="button";convert.addEventListener("click",()=>{convert.hidden=true;codeDrafts.set(`${job.id}:${index}`,{text:"",language:"plaintext"});const editor=codeEditor(item,index);figure.append(editor);$("confirmed").checked=false;enable();});figure.append(convert);if(codeDrafts.has(`${job.id}:${index}`)){convert.hidden=true;figure.append(codeEditor(item,index));}content.append(figure);}
+      else if(item.kind==="code") {const section=element("section",undefined,"code-preview"), pre=element("pre"), code=element("code",item.text);pre.append(code);section.append(element("div",`代码片段 · ${item.language} · ${item.code_reviewed?"可编辑":"需要校对后保存"}`,"small"),pre);if(item.asset){const reference=element("details"),img=element("img");reference.append(element("summary","查看原代码区域（仅用于校对）"));img.src=asset(item.asset);img.alt="原 PDF 代码区域";img.loading="lazy";reference.append(img);section.append(reference);}const editing=element("details");editing.open=!item.code_reviewed || codeDrafts.has(`${job.id}:${index}`);editing.append(element("summary",item.code_reviewed?"编辑代码或语言":"校对识别结果"),codeEditor(item,index));section.append(editing);content.append(section);}
       else if(item.kind==="table") {const table=element("table"); for(const row of item.rows){const tr=element("tr");for(const cell of row)tr.append(element("td",cell));table.append(tr);}content.append(table);}
       else if(["bullet","ordered"].includes(item.kind)){const tag=item.kind==="ordered"?"OL":"UL";let list=content.lastElementChild;if(list?.tagName!==tag){list=element(tag.toLowerCase());content.append(list);}list.append(element("li",item.text));}
       else content.append(element(item.kind==="heading"?"h3":"p",item.text));

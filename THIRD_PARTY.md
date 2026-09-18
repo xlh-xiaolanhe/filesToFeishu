@@ -1,6 +1,6 @@
 # 开源组件和参考来源
 
-实现和许可证记录日期：2026-09-17。完整 Python 依赖版本以 `uv.lock` 为准；模型权重不随项目提交。
+实现和许可证记录日期：2026-09-18。完整 Python 依赖版本以 `uv.lock` 为准；模型权重不随项目提交。
 
 | 组件或参考 | 使用方式 | 许可与来源 |
 | --- | --- | --- |
@@ -10,6 +10,7 @@
 | pypdf / pypdfium2 / Pillow | 输入校验、文字覆盖对照、页面渲染和图片裁切 | [pypdf](https://github.com/py-pdf/pypdf) BSD-3-Clause；[pypdfium2](https://github.com/pypdfium2-team/pypdfium2) Apache-2.0 或 BSD-3-Clause（PDFium 及捆绑库另附通知）；[Pillow](https://github.com/python-pillow/Pillow) MIT-CMU |
 | FastAPI / Uvicorn / Jinja / HTTPX / Pydantic | 本地网页、模板、HTTP 请求与数据模型 | 分别见依赖分发包中的 LICENSE；均使用各项目正式 Python 包 |
 | ReportLab | 仅生成原创测试样本 | [ReportLab](https://www.reportlab.com/opensource/)，BSD |
+| PyObjC Vision 12.2.2 | macOS 本地代码图片 OCR，关闭语言纠错；仅为 macOS 安装 | [PyObjC](https://github.com/ronaldoussoren/pyobjc)，MIT；Apple Vision 为 macOS 系统框架 |
 | feishu-cli | 方案阶段参考写入、表格和知识库流程 | [源仓库](https://github.com/riba2534/feishu-cli)，MIT；没有直接移植源码 |
 | feishu-document-writing | 参考图片占位、素材绑定和文件容器的接口调用顺序 | [源仓库](https://github.com/fan-sun/feishu-document-writing)，未复制或分发该项目代码 |
 | MinerU-Skill | 只用于方案比较，不作为运行依赖 | [集成说明](https://github.com/Nebutra/MinerU-Skill/blob/main/references/integrations.md) |

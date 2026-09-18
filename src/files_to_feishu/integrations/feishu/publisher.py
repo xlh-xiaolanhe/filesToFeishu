@@ -3,7 +3,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from ...models import ParsedDocument, Target, UncertainWrite, UserError
+from ...models import Element, ParsedDocument, Target, UncertainWrite, UserError
 from .client import FeishuClient
 
 
@@ -24,12 +24,33 @@ def text_blocks(text: str, kind: str = "text", level: int = 1) -> list[dict]:
 
 
 def block_text(block: dict) -> str:
-    for field in ["text", "bullet", "ordered"] + [f"heading{i}" for i in range(1, 10)]:
+    for field in ["text", "bullet", "ordered", "code"] + [f"heading{i}" for i in range(1, 10)]:
         if field in block:
             return "".join(
                 e.get("text_run", {}).get("content", "") for e in block[field].get("elements", [])
             )
     return ""
+
+
+def code_blocks(element: Element) -> list[dict]:
+    # Verified against Feishu's blocks/convert response; omit unknown language.
+    language = {"javascript": 30, "typescript": 63}.get(element.language)
+    style: dict = {"wrap": False}
+    if language is not None:
+        style["language"] = language
+    # Keep each logical code snippet in one block; split only text runs for API limits.
+    return [
+        {
+            "block_type": 14,
+            "code": {
+                "style": style,
+                "elements": [
+                    {"text_run": {"content": element.text[start : start + 1500]}}
+                    for start in range(0, len(element.text), 1500)
+                ],
+            },
+        }
+    ]
 
 
 class Publisher:
@@ -139,6 +160,12 @@ class Publisher:
         digest: str,
         filename: str,
     ) -> dict:
+        for element in parsed.elements:
+            if element.kind == "code":
+                if not element.code_reviewed or not element.text.strip():
+                    raise UserError("请先在预览中保存所有代码片段的校对结果。")
+                if len(element.text) > 20000:
+                    raise UserError("单个代码片段超过 20000 字符，请拆分后再发布。")
         document = self.effect(
             "document",
             lambda: self.client.request("POST", "/docx/v1/documents", json={"title": title}),
@@ -197,13 +224,27 @@ class Publisher:
                     )
                 expected.append({"id": table["block_id"], "kind": "table", "cells": cells})
             else:
-                nodes = text_blocks(element.text, element.kind, element.level)
+                nodes = (
+                    code_blocks(element)
+                    if element.kind == "code"
+                    else text_blocks(element.text, element.kind, element.level)
+                )
                 for start in range(0, len(nodes), 50):
                     batch = nodes[start : start + 50]
                     created = self.children(f"{key}:{start}", doc, doc, batch)
                     roots.extend(c["block_id"] for c in created)
                     expected.extend(
-                        {"id": c["block_id"], "kind": "text", "text": block_text(n), "parent": doc}
+                        {
+                            "id": c["block_id"],
+                            "kind": "code" if element.kind == "code" else "text",
+                            "text": block_text(n),
+                            "parent": doc,
+                            **(
+                                {"language": n["code"]["style"].get("language")}
+                                if element.kind == "code"
+                                else {}
+                            ),
+                        }
                         for c, n in zip(created, batch, strict=True)
                     )
 
@@ -268,9 +309,18 @@ class Publisher:
             kind = item["kind"]
             if not block:
                 raise UserError("核对失败：远端缺少已写入的内容。")
-            if kind == "text":
+            if kind in {"text", "code"}:
                 if block_text(block) != item["text"] or block.get("parent_id") != item["parent"]:
                     raise UserError("核对失败：远端文字、单元格内容或顺序已改变。")
+                if kind == "code" and (
+                    block.get("block_type") != 14
+                    or (
+                        item.get("language") is not None
+                        and block.get("code", {}).get("style", {}).get("language")
+                        != item["language"]
+                    )
+                ):
+                    raise UserError("核对失败：远端代码块类型或语言不一致。")
             elif kind == "table":
                 cells = block.get("table", {}).get("cells") or block.get("children", [])
                 if cells != item["cells"]:

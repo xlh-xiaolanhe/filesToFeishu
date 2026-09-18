@@ -1,6 +1,6 @@
 [project]
 name = "files-to-feishu"
-version = "0.1.1"
+version = "0.2.0"
 description = "Local PDF preview and editable Feishu wiki import"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -16,7 +16,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-parser = ["docling>=2.50,<3"]
+parser = [
+    "docling>=2.50,<3",
+    "pyobjc-framework-vision>=11,<13 ; sys_platform == 'darwin'",
+]
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "ruff>=0.9,<1", "mypy>=1.14,<2", "reportlab>=4,<5"]

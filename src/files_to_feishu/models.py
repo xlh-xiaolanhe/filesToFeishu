@@ -8,14 +8,20 @@ class Notice(BaseModel):
     reason: str
 
 
+CodeLanguage = Literal["plaintext", "javascript", "typescript"]
+
+
 class Element(BaseModel):
-    kind: Literal["text", "heading", "bullet", "ordered", "table", "image"]
+    kind: Literal["text", "heading", "bullet", "ordered", "table", "image", "code"]
     page: int
     text: str = ""
     level: int = 1
     rows: list[list[str]] = Field(default_factory=list)
     asset: str = ""
     bbox: list[float] = Field(default_factory=list)
+    language: CodeLanguage = "plaintext"
+    code_origin: Literal["", "pdf_text", "ocr", "manual"] = ""
+    code_reviewed: bool = False
 
 
 class ParsedDocument(BaseModel):

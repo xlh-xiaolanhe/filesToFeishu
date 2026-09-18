@@ -10,7 +10,7 @@ from pathlib import Path
 from .config import Settings
 from .converters.pdf import DoclingParser, inspect_pdf
 from .integrations.feishu import FeishuClient, Publisher
-from .models import ParsedDocument, Target, UncertainWrite, UserError
+from .models import CodeLanguage, ParsedDocument, Target, UncertainWrite, UserError
 from .store import ACTIVE, Store
 
 
@@ -73,9 +73,14 @@ class JobService:
         return ParsedDocument.model_validate_json(path.read_text(encoding="utf-8"))
 
     def submit_publish(self, job_id: str, url: str, title: str) -> dict:
-        self.parsed(job_id)
         with self.lock:
             job = self.store.get(job_id)
+            parsed = self.parsed(job_id)
+            if any(
+                e.kind == "code" and (not e.code_reviewed or not e.text.strip())
+                for e in parsed.elements
+            ):
+                raise UserError("请先在预览中保存所有代码片段的校对结果。")
             if job["status"] in {"publishing", "verifying", "archiving"}:
                 return job
             target = self.client.resolve(url)
@@ -111,9 +116,35 @@ class JobService:
             self.executor.submit(self.publish, job_id)
         return claimed
 
+    def save_code(self, job_id: str, index: int, text: str, language: CodeLanguage):
+        with self.lock:
+            job = self.store.get(job_id)
+            if job["status"] != "ready" or job["journal"] or job.get("document_id"):
+                raise UserError("已开始发布或正在处理的任务不能修改代码；请重新上传 PDF。")
+            parsed = self.parsed(job_id)
+            if not 0 <= index < len(parsed.elements) or parsed.elements[index].kind not in {
+                "code",
+                "image",
+            }:
+                raise UserError("只能将代码或图片区域保存为代码片段。")
+            if not text.strip() or len(text) > 20000:
+                raise UserError("代码内容不能为空，且每段最多 20000 字符。")
+            element = parsed.elements[index]
+            element.kind = "code"
+            element.text = text
+            element.language = language
+            element.code_origin = "manual"
+            element.code_reviewed = True
+            path = self.folder(job_id) / "parsed.json"
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(parsed.model_dump_json(), encoding="utf-8")
+            temporary.replace(path)
+            return self.store.update(job_id, progress="代码校对已保存，请确认后发布")
+
     def publish(self, job_id: str):
         try:
             job = self.store.get(job_id)
+            parsed = self.parsed(job_id)
             target = Target.model_validate(job["target"])
             publisher = Publisher(
                 self.client,
@@ -131,6 +162,15 @@ class JobService:
                     and previous.get("app_id") == job["app_id"]
                     and previous.get("target", {}).get("node_token") == target.node_token
                     and previous.get("target", {}).get("space_id") == target.space_id
+                    # A new conversion or a corrected code snippet must not reuse an old
+                    # image-only result. Existing started jobs still resume their journal.
+                    and (
+                        previous["id"] == job_id
+                        or (
+                            not job["journal"]
+                            and self.parsed(previous["id"]).elements == parsed.elements
+                        )
+                    )
                 ):
                     node = self.client.node(previous["wiki_token"])
                     if (
@@ -157,7 +197,7 @@ class JobService:
                     return
             folder = self.folder(job_id)
             result = publisher.publish(
-                self.parsed(job_id),
+                parsed,
                 folder / "source.pdf",
                 folder / "assets",
                 job["title"],

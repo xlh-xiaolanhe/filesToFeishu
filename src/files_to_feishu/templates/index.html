@@ -9,7 +9,7 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <header><div class="brand">纸页 <span>→</span> 知识库</div><span class="badge">本地转换 · v0.1 MVP</span></header>
+  <header><div class="brand">纸页 <span>→</span> 知识库</div><span class="badge">本地转换 · v0.2</span></header>
   <main>
     <section class="intro"><p class="eyebrow">PDF TO FEISHU</p><h1>让文档，成为可编辑的知识。</h1><p>本地解析 PDF，核对内容后保存到指定飞书知识库。复杂区域用图片保留，原文件随文档附上。</p></section>
     <div id="setup" class="notice" role="status" hidden></div>
@@ -26,9 +26,9 @@
         <p id="target-name" class="muted"></p>
         <div class="divider"></div>
         <h2><span class="step">3</span> 确认并保存</h2>
-        <label class="check"><input id="confirmed" type="checkbox">我已核对原文、转换结果和图片保留提示</label>
+        <label class="check"><input id="confirmed" type="checkbox">我已核对原文、代码片段、转换结果和图片保留提示</label>
         <button id="publish" disabled type="button">保存到飞书</button>
-        <p class="muted small">普通文字与表格尽量可编辑；预览不代表飞书最终版式，也不保证逐像素一致。</p>
+        <p class="muted small">普通文字、代码与表格尽量可编辑；预览不代表飞书最终版式，也不保证逐像素一致。</p>
         <div class="divider"></div>
         <label for="history">最近任务</label><select id="history"><option value="">选择任务查看进度</option></select>
       </aside>
