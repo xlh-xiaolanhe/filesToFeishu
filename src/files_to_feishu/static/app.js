@@ -123,18 +123,30 @@ function preview() {
     const image=element("img",undefined,"source-image");image.src=asset(job.preview.page_images[page-1]);image.alt=`原文第 ${page} 页`;image.loading="lazy";left.append(image);
     const content=element("div",undefined,"converted");
     for(const [index,item] of job.preview.elements.entries()) {
+      if (item.kind === "code" && item.page !== page && item.code_sources?.some(source => source.page === page)) {
+        const link = element("a", `查看合并后的代码（始于第 ${item.page} 页）`, "code-continuation");
+        link.href = `#code-${index}`;
+        content.append(link);
+      }
       if(item.page!==page)continue;
       if(item.kind==="image") {const figure=element("figure"), img=element("img");img.src=asset(item.asset);img.alt=item.text;img.loading="lazy";figure.append(img,element("figcaption",item.text));const convert=element("button","这是代码图片：改为代码片段","secondary convert-code");convert.type="button";convert.addEventListener("click",()=>{convert.hidden=true;codeDrafts.set(`${job.id}:${index}`,{text:"",language:"plaintext"});const editor=codeEditor(item,index);figure.append(editor);$("confirmed").checked=false;enable();});figure.append(convert);if(codeDrafts.has(`${job.id}:${index}`)){convert.hidden=true;figure.append(codeEditor(item,index));}content.append(figure);}
       else if (item.kind === "code") {
         const section = element("section", undefined, "code-preview");
+        section.id = `code-${index}`;
         section.append(codeEditor(item, index));
-        if (item.asset) {
-          const reference = element("details", undefined, "code-reference"), img = element("img");
-          reference.append(element("summary", "查看原代码区域（仅用于校对）"));
-          img.src = asset(item.asset);
-          img.alt = "原 PDF 代码区域";
-          img.loading = "lazy";
-          reference.append(img);
+        const sources = item.code_sources?.length ? item.code_sources : [{page: item.page, asset: item.asset}];
+        if (item.asset || item.code_sources?.length) {
+          const reference = element("details", undefined, "code-reference");
+          const pages = sources.length > 1 ? ` · 第 ${sources.map(source => source.page).join("、")} 页` : "";
+          reference.append(element("summary", `查看原代码区域（仅用于校对）${pages}`));
+          for (const source of sources) {
+            const img = element("img");
+            if (sources.length > 1) reference.append(element("div", `原 PDF 第 ${source.page} 页`, "muted"));
+            img.src = asset(source.asset || `page-${source.page}.png`);
+            img.alt = sources.length > 1 ? `原 PDF 第 ${source.page} 页代码区域` : "原 PDF 代码区域";
+            img.loading = "lazy";
+            reference.append(img);
+          }
           section.append(reference);
         }
         content.append(section);

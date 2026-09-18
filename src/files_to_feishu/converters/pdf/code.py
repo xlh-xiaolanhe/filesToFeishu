@@ -11,7 +11,8 @@ from typing import Any, Literal, cast
 import pypdfium2 as pdfium
 from PIL import Image
 
-from ...models import CodeLanguage, Element, Notice
+from ...models import CodeLanguage, CodeSource, Element, Notice
+from .continuation import adjacent_edges, continues_code, sources_of
 
 
 def looks_like_code(text: str) -> bool:
@@ -190,11 +191,13 @@ def extract_code_regions(
     regions: list[Element] = []
     notices: list[Notice] = []
     ocr_error_reported = False
+    sizes: dict[int, tuple[float, float]] = {}
     with pdfium.PdfDocument(source) as pdf:
         for number in range(1, len(pdf) + 1):
             page = pdf[number - 1]
             try:
                 width, height = page.get_size()
+                sizes[number] = (width, height)
                 with Image.open(output / f"page-{number}.png") as image:
                     sx, sy = image.width / width, image.height / height
                     candidates = [
@@ -203,14 +206,14 @@ def extract_code_regions(
                     ]
                     for item in layout.get("texts", []) + layout.get("pictures", []):
                         prov = item.get("prov", [])
-                        if (
-                            item.get("label") in {"code", "picture"}
-                            and len(prov) == 1
-                            and prov[0]["page_no"] == number
-                        ):
-                            bounds = layout_bounds(item, height)
-                            if not any(contains(b, bounds) for b, _ in candidates):
-                                candidates.append((bounds, item["label"] == "code"))
+                        if item.get("label") in {"code", "picture"}:
+                            for location in prov:
+                                if location["page_no"] != number:
+                                    continue
+                                bounds = layout_bounds({"prov": [location]}, height)
+                                if not any(contains(b, bounds) for b, _ in candidates):
+                                    candidates.append((bounds, item["label"] == "code"))
+                    candidates.sort(key=lambda candidate: candidate[0][1])
                     textpage = page.get_textpage()
                     try:
                         for bounds, labelled in candidates:
@@ -256,7 +259,19 @@ def extract_code_regions(
                                         )
                                         ocr_error_reported = True
                                     continue
-                            if not text.strip() or not (labelled or looks_like_code(text)):
+                            continuation = any(
+                                adjacent_edges(
+                                    sources_of(previous)[-1],
+                                    CodeSource(page=number, bbox=bounds),
+                                    sizes,
+                                )
+                                and continues_code(previous.text, text)
+                                for previous in regions
+                                if previous.page == number - 1
+                            )
+                            if not text.strip() or not (
+                                labelled or looks_like_code(text) or continuation
+                            ):
                                 continue
                             asset = f"code-{len(regions) + 1}.png"
                             crop.save(output / asset)

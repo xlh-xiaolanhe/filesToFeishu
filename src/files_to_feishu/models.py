@@ -11,6 +11,12 @@ class Notice(BaseModel):
 CodeLanguage = Literal["plaintext", "javascript", "typescript"]
 
 
+class CodeSource(BaseModel):
+    page: int
+    asset: str = ""
+    bbox: list[float] = Field(default_factory=list)
+
+
 class Element(BaseModel):
     kind: Literal["text", "heading", "bullet", "ordered", "table", "image", "code"]
     page: int
@@ -22,6 +28,7 @@ class Element(BaseModel):
     language: CodeLanguage = "plaintext"
     code_origin: Literal["", "pdf_text", "ocr", "manual"] = ""
     code_reviewed: bool = False
+    code_sources: list[CodeSource] = Field(default_factory=list)
 
 
 class ParsedDocument(BaseModel):

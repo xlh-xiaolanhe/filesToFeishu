@@ -10,7 +10,8 @@ from PIL import Image
 from pypdf import PdfReader
 
 from ...models import Element, Notice, ParsedDocument, UserError
-from .code import contains, extract_code_regions, language_of
+from .code import contains, extract_code_regions, language_of, layout_bounds
+from .continuation import merge_cross_page_code
 
 
 def inspect_pdf(source: Path, max_bytes: int, max_pages: int) -> list[str]:
@@ -76,6 +77,15 @@ def from_layout(
     covered: dict[int, str] = {}
     code_regions = code_regions or []
     emitted_codes: set[int] = set()
+    furniture_ids: set[int] = set()
+    page_sizes: dict[int, tuple[float, float]] = {}
+    for number in range(1, len(texts) + 1):
+        with Image.open(output / f"page-{number}.png") as page_image:
+            size = layout.get("pages", {}).get(str(number), {}).get("size", {})
+            page_sizes[number] = (
+                size.get("width", page_image.width / 2),
+                size.get("height", page_image.height / 2),
+            )
 
     def resolve(ref):
         node: Any = layout
@@ -109,6 +119,33 @@ def from_layout(
         provenance = item.get("prov", [])
         if not provenance:
             raise UserError("解析结果包含无法定位来源的内容，已停止转换。")
+        # A single Docling code item may refer to several pages. Each recovered
+        # region already contains that page's text; do not repeat the full item.
+        if label == "code" and len({p["page_no"] for p in provenance}) > 1:
+            matches = []
+            for location in provenance:
+                number = location["page_no"]
+                height = page_sizes.get(number, (0, 0))[1]
+                bounds = layout_bounds({"prov": [location]}, height)
+                match = next(
+                    (
+                        i
+                        for i, region in enumerate(code_regions)
+                        if region.page == number and contains(region.bbox, bounds)
+                    ),
+                    None,
+                )
+                if match is None:
+                    break
+                matches.append(match)
+            if len(matches) == len(provenance):
+                for i in set(matches):
+                    region = code_regions[i]
+                    if i not in emitted_codes:
+                        elements.append(region)
+                        covered[region.page] = covered.get(region.page, "") + region.text
+                        emitted_codes.add(i)
+                return
         page = provenance[0]["page_no"]
         if page < 1 or page > len(texts):
             raise UserError("解析结果的页码无效。")
@@ -211,6 +248,8 @@ def from_layout(
                     c.get("text", "") for c in item.get("data", {}).get("table_cells", [])
                 )
             elements.append(element)
+            if label in {"page_header", "page_footer"}:
+                furniture_ids.add(id(element))
         # Table/picture children are represented by the enclosing grid or crop.
         if label in {"table", "picture"}:
             mark_children(item)
@@ -270,12 +309,13 @@ def from_layout(
             result.extend(e for e in page_elements if e.kind == "code")
         else:
             result.extend(page_elements)
-    return ParsedDocument(
+    parsed = ParsedDocument(
         pages=len(texts),
         elements=result,
         notices=notices,
         page_images=[f"page-{p}.png" for p in range(1, len(texts) + 1)],
     )
+    return merge_cross_page_code(parsed, page_sizes, furniture_ids)
 
 
 class DoclingParser:

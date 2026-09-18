@@ -9,7 +9,7 @@ import uvicorn
 from files_to_feishu.app import create_app
 from files_to_feishu.config import Settings
 from files_to_feishu.converters.pdf import render_pages
-from files_to_feishu.models import Element, ParsedDocument
+from files_to_feishu.models import CodeSource, Element, ParsedDocument
 from tests.integrations.feishu.test_publisher import MemoryFeishu
 
 
@@ -27,6 +27,10 @@ def code_preview_fixture(source, assets, progress):
                 language="javascript",
                 code_origin="ocr",
                 asset="page-1.png",
+                code_sources=[
+                    CodeSource(page=1, asset="page-1.png"),
+                    CodeSource(page=2, asset="page-2.png"),
+                ],
             ),
             Element(kind="image", page=2, asset="page-2.png", text="Manual conversion sample"),
         ],

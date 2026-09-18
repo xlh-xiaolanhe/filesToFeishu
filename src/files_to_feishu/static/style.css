@@ -18,3 +18,4 @@
 .code-preview summary { cursor: pointer; color: #646a73; font-size: 12px; }
 .code-reference { margin-top: 8px; }
 .code-reference img { display: block; margin-top: 8px; }
+.code-continuation { display: block; margin: 10px 0; }

@@ -76,13 +76,18 @@ def test_existing_serialized_job_remains_readable_after_reorganization(tmp_path)
         parsed = service.parsed(job["id"])
         assert (
             parsed.model_dump(
-                exclude={"elements": {"__all__": {"language", "code_origin", "code_reviewed"}}}
+                exclude={
+                    "elements": {
+                        "__all__": {"language", "code_origin", "code_reviewed", "code_sources"}
+                    }
+                }
             )
             == legacy
         )
         assert parsed.elements[0].language == "plaintext"
         assert parsed.elements[0].code_origin == ""
         assert parsed.elements[0].code_reviewed is False
+        assert parsed.elements[0].code_sources == []
         service.store.recover()
         persisted = service.store.get(job["id"])
         assert persisted["status"] == "succeeded"

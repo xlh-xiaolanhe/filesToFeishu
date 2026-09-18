@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from files_to_feishu.app import create_app
 from files_to_feishu.config import Settings
-from files_to_feishu.models import Element, ParsedDocument
+from files_to_feishu.models import CodeSource, Element, ParsedDocument
 from tests.integrations.feishu.test_publisher import MemoryFeishu
 from tests.test_workflow import wait
 
@@ -40,7 +40,15 @@ def test_code_review_persistence_publish_lock_and_changed_conversion_dedup(tmp_p
         old_id = upload()
         publish(old_id)
         assert remote.created == 1
-        source[:] = [Element(kind="code", page=1, text="const n = 1", code_origin="ocr")]
+        source[:] = [
+            Element(
+                kind="code",
+                page=1,
+                text="const n = 1",
+                code_origin="ocr",
+                code_sources=[CodeSource(page=1), CodeSource(page=2)],
+            )
+        ]
         new_id = upload()
         assert client.post(f"/api/jobs/{new_id}/publish", json=payload).status_code == 400
         assert remote.created == 1
@@ -50,6 +58,7 @@ def test_code_review_persistence_publish_lock_and_changed_conversion_dedup(tmp_p
         assert restored["text"] == edit["text"]
         assert restored["code_reviewed"] is True
         assert restored["code_origin"] == "manual"
+        assert [item["page"] for item in restored["code_sources"]] == [1, 2]
         publish(new_id)
         assert remote.created == 2  # New code content must not reuse the old image document.
         assert client.post(f"/api/jobs/{new_id}/code/0", json=edit).status_code == 400

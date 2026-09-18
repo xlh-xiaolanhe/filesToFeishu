@@ -197,6 +197,25 @@ def test_unreviewed_code_is_rejected_before_remote_creation(publishing):
     assert journal == {}
 
 
+def test_cross_page_code_publishes_once_without_reference_images_or_page_breaks(publishing):
+    from files_to_feishu.converters.pdf.continuation import merge_cross_page_code
+    from files_to_feishu.integrations.feishu.publisher import block_text
+    from tests.converters.pdf.test_continuation import FIRST, SECOND, SIZES, pair
+
+    client, _, publisher, args = publishing
+    parsed = merge_cross_page_code(ParsedDocument(pages=2, elements=pair()), SIZES)
+    args[0].elements = parsed.elements
+    with pytest.raises(UserError, match="校对"):
+        publisher().publish(*args)
+    assert client.created == 0
+    parsed.elements[0].code_reviewed = True
+    publisher().publish(*args)
+    blocks = [client.data[key] for key in client.data["doc1"]["children"]]
+    assert [block["block_type"] for block in blocks] == [14, 33]
+    assert block_text(blocks[0]) == FIRST + "\n" + SECOND
+    assert len(client.files) == 1  # Original PDF only; neither source crop is uploaded.
+
+
 def test_known_upload_failure_resumes_without_duplicate_blocks(publishing):
     client, journal, publisher, args = publishing
     client.fail_upload = True
