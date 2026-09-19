@@ -19,6 +19,7 @@ class MemoryFeishu:
         self.fail_upload = False
         self.lost_response = False
         self.parent = "parent"
+        self.blank_cells = False
 
     def identifier(self):
         self.sequence += 1
@@ -50,6 +51,15 @@ class MemoryFeishu:
                             "children": [],
                         }
                         self.data[cell["block_id"]] = cell
+                        if self.blank_cells:
+                            blank = {
+                                "block_id": self.identifier(),
+                                "block_type": 2,
+                                "parent_id": cell["block_id"],
+                                "text": {"elements": [{"text_run": {"content": ""}}]},
+                            }
+                            self.data[blank["block_id"]] = blank
+                            cell["children"].append(blank["block_id"])
                         cells.append(cell["block_id"])
                     block["table"]["cells"] = cells
                     block["children"] = cells
@@ -71,7 +81,10 @@ class MemoryFeishu:
         if method == "PATCH":
             block = self.data[path.split("/")[-1]]
             for field, value in body.items():
-                block[field.removeprefix("replace_")] = value
+                if field == "update_text_elements":
+                    block["text"]["elements"] = copy.deepcopy(value["elements"])
+                else:
+                    block[field.removeprefix("replace_")] = value
             return {"block": block}
         if path.endswith("move_docs_to_wiki"):
             self.target = body["obj_token"]
@@ -227,6 +240,126 @@ def test_known_upload_failure_resumes_without_duplicate_blocks(publishing):
     publisher().publish(*args)
     assert client.created == 1
     assert len(client.data) == blocks + 2  # Original PDF wrapper and file.
+
+
+@pytest.mark.parametrize("blank_cells", [False, True])
+def test_lost_table_cell_response_resumes_without_duplicate_text(publishing, blank_cells):
+    client, journal, publisher, args = publishing
+    client.blank_cells = blank_cells
+    args[0].elements = [
+        Element(
+            kind="table",
+            page=1,
+            rows=[[f"cell-{row * 3 + column}" for column in range(3)] for row in range(3)],
+        )
+    ]
+    original = client.request
+    dropped = False
+
+    def request(method, path, **kwargs):
+        nonlocal dropped
+        result = original(method, path, **kwargs)
+        if not dropped and "cell-8" in str(kwargs.get("json", {})):
+            dropped = True
+            raise UncertainWrite("飞书写入响应丢失，操作可能已生效，已停止自动重试。")
+        return result
+
+    client.request = request
+    with pytest.raises(UncertainWrite, match="响应丢失"):
+        publisher().publish(*args)
+    assert journal["element-0:cell-8"]["state"] == "pending"
+    client.request = original
+    assert publisher().publish(*args)["wiki_token"] == "child"
+    written = [block for block in client.data.values() if "cell-8" in str(block.get("text", {}))]
+    assert len(written) == 1
+    assert journal["element-0:cell-8"]["state"] == "done"
+
+
+@pytest.mark.parametrize("lose_repair_response", [False, True])
+def test_pending_empty_cell_is_filled_in_place_and_repair_can_resume(
+    publishing, lose_repair_response
+):
+    from files_to_feishu.integrations.feishu.publisher import block_text
+
+    client, journal, publisher, args = publishing
+    client.blank_cells = True
+    args[0].elements = [Element(kind="table", page=1, rows=[["expected cell text"]])]
+    original = client.request
+
+    def fail_before_write(method, path, **kwargs):
+        if "expected cell text" in str(kwargs.get("json", {})):
+            raise UncertainWrite("connection lost before text arrived")
+        return original(method, path, **kwargs)
+
+    client.request = fail_before_write
+    with pytest.raises(UncertainWrite):
+        publisher().publish(*args)
+    table = journal["element-0"]["result"]["children"][0]
+    cell_id = table["table"]["cells"][0]
+    placeholder_id = client.data[cell_id]["children"][0]
+    client.request = original
+    if lose_repair_response:
+
+        def fail_after_patch(method, path, **kwargs):
+            result = original(method, path, **kwargs)
+            if method == "PATCH" and "update_text_elements" in kwargs.get("json", {}):
+                raise UncertainWrite("response lost after filling placeholder")
+            return result
+
+        client.request = fail_after_patch
+        with pytest.raises(UncertainWrite, match="after filling"):
+            publisher().publish(*args)
+        assert journal["element-0:cell-0"]["state"] == "pending"
+        client.request = original
+    assert publisher().publish(*args)["wiki_token"] == "child"
+    assert client.data[cell_id]["children"] == [placeholder_id]
+    assert block_text(client.data[placeholder_id]) == "expected cell text"
+    assert journal["element-0:cell-0"]["result"]["children"][0]["block_id"] == placeholder_id
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        [{"text_run": {"content": "User changed this"}}],
+        [{"mention_user": {"user_id": "user-reference"}}],
+    ],
+)
+def test_pending_cell_with_different_content_is_never_overwritten(publishing, replacement):
+    client, journal, publisher, args = publishing
+    args[0].elements = [Element(kind="table", page=1, rows=[["expected"]])]
+    original = client.request
+
+    def lost(method, path, **kwargs):
+        result = original(method, path, **kwargs)
+        if "expected" in str(kwargs.get("json", {})):
+            raise UncertainWrite("lost response")
+        return result
+
+    client.request = lost
+    with pytest.raises(UncertainWrite):
+        publisher().publish(*args)
+    table = journal["element-0"]["result"]["children"][0]
+    cell = client.data[table["table"]["cells"][0]]
+    block = client.data[cell["children"][0]]
+    block["text"]["elements"] = replacement
+    before = copy.deepcopy(client.data)
+    client.request = original
+    with pytest.raises(UncertainWrite):
+        publisher().publish(*args)
+    assert client.data == before
+    assert journal["element-0:cell-0"]["state"] == "pending"
+
+
+def test_verify_detects_duplicate_cell_text_even_with_original_blocks_intact(publishing):
+    client, journal, publisher, args = publishing
+    publisher().publish(*args)
+    cell = next(block for block in client.data.values() if block["block_type"] == 32)
+    duplicate = copy.deepcopy(client.data[cell["children"][0]])
+    duplicate["block_id"] = client.identifier()
+    client.data[duplicate["block_id"]] = duplicate
+    cell["children"].append(duplicate["block_id"])
+    with pytest.raises(UserError, match="单元格"):
+        publisher().verify("doc1", **journal["verified"]["result"])
 
 
 def test_lost_write_response_is_never_repeated(publishing):

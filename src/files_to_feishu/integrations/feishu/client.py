@@ -87,15 +87,24 @@ class FeishuClient:
                     time.sleep(2**attempt)
                     continue
                 raise UserError("飞书读取失败，请检查网络。") from exc
+            # Gateways may return a plain-text 429. Classify the HTTP rejection
+            # before decoding JSON so it does not leave an uncertain-write journal.
+            if response.status_code == 429:
+                if attempt < 3:
+                    time.sleep(2**attempt)
+                    continue
+                raise UserError("飞书接口持续限流，请稍后重试。")
             if response.status_code >= 500 and writing:
                 raise UncertainWrite("飞书服务端异常，无法确定写入是否生效；请核对远端文档。")
             try:
                 body = response.json()
             except ValueError as exc:
                 error_type = UncertainWrite if writing else UserError
-                raise error_type("飞书返回无法识别的响应，请核对任务状态。") from exc
+                raise error_type(
+                    f"飞书返回无法识别的响应（HTTP {response.status_code}），请核对任务状态。"
+                ) from exc
             code = body.get("code")
-            if response.status_code == 429 or code == 99991400:
+            if code == 99991400:
                 if attempt < 3:
                     time.sleep(2**attempt)
                     continue

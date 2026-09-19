@@ -32,6 +32,22 @@ def block_text(block: dict) -> str:
     return ""
 
 
+def plain_text_block(block: dict) -> bool:
+    """Do not mistake mentions or other non-text runs for an empty placeholder."""
+    return (
+        block.get("block_type") == 2
+        and "text" in block
+        and all(
+            set(run) == {"text_run"} and isinstance(run["text_run"].get("content"), str)
+            for run in block["text"].get("elements", [])
+        )
+    )
+
+
+def empty_text_block(block: dict) -> bool:
+    return plain_text_block(block) and block_text(block) == ""
+
+
 def code_blocks(element: Element) -> list[dict]:
     # Verified against Feishu's blocks/convert response; omit unknown language.
     language = {"javascript": 30, "typescript": 63}.get(element.language)
@@ -95,7 +111,51 @@ class Publisher:
         self.save(self.journal)
         return result
 
-    def children(self, key: str, doc: str, parent: str, blocks: list[dict]) -> list[dict]:
+    def reconcile_cell(self, key: str, doc: str, parent: str, blocks: list[dict]) -> dict | None:
+        cell = self.client.block(doc, parent)
+        if cell.get("block_type") != 32 or not all(plain_text_block(b) for b in blocks):
+            return None
+        actual = [self.client.block(doc, child) for child in cell.get("children", [])]
+        if any(b.get("parent_id") != parent for b in actual):
+            raise UncertainWrite("单元格内容归属不一致，已停止恢复，请核对远端文档。")
+        candidates = actual
+        # Feishu creates a blank paragraph in a new cell. Appending content leaves
+        # that paragraph in place; it is not one of our expected created blocks.
+        if len(actual) == len(blocks) + 1 and empty_text_block(actual[0]):
+            candidates = actual[1:]
+        if len(candidates) == len(blocks) and all(
+            plain_text_block(a) and block_text(a) == block_text(b)
+            for a, b in zip(candidates, blocks, strict=True)
+        ):
+            return {"children": candidates}
+        if len(actual) == len(blocks) == 1 and empty_text_block(actual[0]):
+            # Legacy journals lack a request token. Reuse the existing placeholder
+            # instead of blindly repeating an append whose result was uncertain.
+            block_id = actual[0]["block_id"]
+            entry = self.journal[key]
+            if entry.get("repair_block_id", block_id) != block_id:
+                raise UncertainWrite("单元格占位块已改变，已停止恢复，请核对远端文档。")
+            entry["repair_block_id"] = block_id
+            self.save(self.journal)
+            self.client.request(
+                "PATCH",
+                f"/docx/v1/documents/{doc}/blocks/{block_id}",
+                params={"document_revision_id": -1},
+                json={"update_text_elements": {"elements": blocks[0]["text"]["elements"]}},
+            )
+            repaired = self.client.block(doc, block_id)
+            if (
+                not plain_text_block(repaired)
+                or repaired.get("parent_id") != parent
+                or block_text(repaired) != block_text(blocks[0])
+            ):
+                raise UncertainWrite("单元格恢复结果尚未确认，请稍后核对状态并重试。")
+            return {"children": [repaired]}
+        raise UncertainWrite("单元格已有内容与预期不一致，已停止恢复，请核对远端文档。")
+
+    def children(
+        self, key: str, doc: str, parent: str, blocks: list[dict], *, cell: bool = False
+    ) -> list[dict]:
         result = self.effect(
             key,
             lambda: self.client.request(
@@ -104,6 +164,7 @@ class Publisher:
                 params={"document_revision_id": -1},
                 json={"children": blocks, "index": -1},
             ),
+            (lambda: self.reconcile_cell(key, doc, parent, blocks)) if cell else None,
         )
         children = result.get("children", [])
         if len(children) != len(blocks):
@@ -211,7 +272,7 @@ class Publisher:
                 for cell_index, text in enumerate(cell for row in rows for cell in row):
                     nodes = text_blocks(text)
                     created = self.children(
-                        f"{key}:cell-{cell_index}", doc, cells[cell_index], nodes
+                        f"{key}:cell-{cell_index}", doc, cells[cell_index], nodes, cell=True
                     )
                     expected.extend(
                         {
@@ -304,12 +365,15 @@ class Publisher:
 
     def verify(self, doc: str, expected: list[dict], roots: list[str]):
         blocks = {b["block_id"]: b for b in self.client.blocks(doc)}
+        cell_children: dict[str, list[str]] = {}
         for item in expected:
             block = blocks.get(item["id"], {})
             kind = item["kind"]
             if not block:
                 raise UserError("核对失败：远端缺少已写入的内容。")
             if kind in {"text", "code"}:
+                if item["parent"] != doc:
+                    cell_children.setdefault(item["parent"], []).append(item["id"])
                 if block_text(block) != item["text"] or block.get("parent_id") != item["parent"]:
                     raise UserError("核对失败：远端文字、单元格内容或顺序已改变。")
                 if kind == "code" and (
@@ -327,6 +391,17 @@ class Publisher:
                     raise UserError("核对失败：远端表格结构不一致。")
             elif block.get(kind, {}).get("token") != item["token"]:
                 raise UserError("核对失败：图片或文件附件未正确关联。")
+        for parent, wanted in cell_children.items():
+            cell = blocks.get(parent, {})
+            actual = cell.get("children", [])
+            if (
+                len(actual) == len(wanted) + 1
+                and actual[0] not in wanted
+                and empty_text_block(blocks.get(actual[0], {}))
+            ):
+                actual = actual[1:]
+            if cell.get("block_type") != 32 or actual != wanted:
+                raise UserError("核对失败：单元格内容数量或顺序不一致，可能存在重复写入。")
         root = blocks.get(doc) or self.client.block(doc, doc)
         if root.get("children", []) != roots:
             raise UserError("核对失败：文档顶层内容数量或顺序不一致。")

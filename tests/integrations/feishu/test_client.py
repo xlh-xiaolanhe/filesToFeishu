@@ -40,6 +40,42 @@ def test_a_timed_out_document_creation_is_never_blindly_retried():
     assert len(writes) == 1
 
 
+@pytest.mark.parametrize("persistent", [False, True])
+def test_non_json_rate_limit_is_retried_without_uncertain_write(monkeypatch, persistent):
+    monkeypatch.setattr("files_to_feishu.integrations.feishu.client.time.sleep", lambda _: None)
+    calls = []
+
+    def handle(request):
+        if "tenant_access_token" in request.url.path:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "tenant_access_token": "token",
+                    "expire": 7200,
+                },
+            )
+        calls.append(request)
+        if persistent or len(calls) == 1:
+            return httpx.Response(429, content=b"Too Many Requests")
+        return httpx.Response(200, json={"code": 0, "data": {"children": []}})
+
+    client = FeishuClient(
+        Settings(feishu_app_id="app", feishu_app_secret="secret"),
+        httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    if persistent:
+        with pytest.raises(UserError, match="限流") as caught:
+            client.request("POST", "/docx/v1/documents/doc/blocks/doc/children", json={})
+        assert not isinstance(caught.value, UncertainWrite)
+        assert len(calls) == 4
+    else:
+        assert client.request("POST", "/docx/v1/documents/doc/blocks/doc/children", json={}) == {
+            "children": []
+        }
+        assert len(calls) == 2
+
+
 def test_rate_limit_refresh_pagination_and_original_bytes(tmp_path, monkeypatch):
     import hashlib
     from email.parser import BytesParser
