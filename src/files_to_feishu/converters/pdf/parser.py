@@ -10,6 +10,7 @@ from PIL import Image
 from pypdf import PdfReader
 
 from ...models import Element, Notice, ParsedDocument, UserError
+from .cleanup import is_page_number, list_text, page_without_numbers, source_list_markers
 from .code import contains, extract_code_regions, language_of, layout_bounds
 from .continuation import merge_cross_page_code
 
@@ -67,6 +68,8 @@ def from_layout(
     texts: list[str],
     output: Path,
     code_regions: list[Element] | None = None,
+    *,
+    source: Path | None = None,
 ) -> ParsedDocument:
     """Map Docling's public JSON document format to our preview/publish representation."""
     elements: list[Element] = []
@@ -79,6 +82,8 @@ def from_layout(
     emitted_codes: set[int] = set()
     furniture_ids: set[int] = set()
     page_sizes: dict[int, tuple[float, float]] = {}
+    page_numbers: dict[int, list[list[float]]] = {}
+    list_markers = source_list_markers(source, layout) if source else {}
     for number in range(1, len(texts) + 1):
         with Image.open(output / f"page-{number}.png") as page_image:
             size = layout.get("pages", {}).get(str(number), {}).get("size", {})
@@ -179,6 +184,12 @@ def from_layout(
                     for child in item.get("children", []):
                         walk(resolve(child["$ref"]))
                     return
+            if is_page_number(item.get("text", ""), label, bounds, height, page):
+                # Count intentional exclusions as covered, so removing a page
+                # number cannot trigger a full-page fallback and reintroduce it.
+                covered[page] = covered.get(page, "") + item.get("text", "")
+                page_numbers.setdefault(page, []).append(bounds)
+                return
             element = Element(kind="text", page=page, text=item.get("text", ""), bbox=bounds)
             reason = ""
             if len({p["page_no"] for p in provenance}) > 1:
@@ -201,6 +212,7 @@ def from_layout(
                 element.level = min(max(int(item.get("level", 1)), 1), 6)
             elif label == "list_item":
                 element.kind = "ordered" if item.get("enumerated") else "bullet"
+                element.text = list_text(item, list_markers)
             elif label == "table":
                 data = item.get("data", {})
                 cells = data.get("table_cells", [])
@@ -299,12 +311,15 @@ def from_layout(
         missing = sum((expected - Counter(_plain(extracted))).values())
         if not native.strip():
             fallback_pages[page] = "该页无可提取文字，已保留整页图片"
-        elif not page_elements or missing > max(2, len(_plain(native)) * 0.02):
+        elif (not page_elements and not page_numbers.get(page)) or missing > max(
+            2, len(_plain(native)) * 0.02
+        ):
             fallback_pages[page] = "检测到文字覆盖不足，已保留整页图片，请核对"
         if page in fallback_pages:
             reason = fallback_pages[page]
             notices.append(Notice(page=page, reason=reason))
-            result.append(Element(kind="image", page=page, asset=f"page-{page}.png", text=reason))
+            asset = page_without_numbers(output, page, page_numbers.get(page, []), page_sizes[page])
+            result.append(Element(kind="image", page=page, asset=asset, text=reason))
             # Keep recovered code editable even when unrelated page content needs fallback.
             result.extend(e for e in page_elements if e.kind == "code")
         else:
@@ -362,6 +377,6 @@ class DoclingParser:
         progress("正在核对内容并整理预览")
         layout = converted.document.export_to_dict()
         code_regions, notices = extract_code_regions(source, output, layout, progress)
-        parsed = from_layout(layout, texts, output, code_regions)
+        parsed = from_layout(layout, texts, output, code_regions, source=source)
         parsed.notices.extend(notices)
         return parsed

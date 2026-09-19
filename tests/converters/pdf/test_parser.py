@@ -6,6 +6,34 @@ from files_to_feishu.converters.pdf.parser import from_layout, inspect_pdf, rend
 from files_to_feishu.models import UserError
 
 
+def test_layout_does_not_publish_displaced_list_marker_or_page_number(tmp_path):
+    # PDF reading order can put a left-hand list marker after the sentence.
+    Image.new("RGB", (600, 800), "white").save(tmp_path / "page-1.png")
+    items = [
+        {
+            "label": "list_item",
+            "text": "JavaScript 代码量很少。 ●",
+            "marker": "●",
+            "bbox": {"l": 30, "t": 180, "r": 260, "b": 220},
+        },
+        {"label": "page_footer", "text": "1", "bbox": {"l": 270, "t": 386, "r": 280, "b": 392}},
+    ]
+    texts = [
+        {
+            "self_ref": f"#/texts/{i}",
+            "label": item["label"],
+            "text": item["text"],
+            "marker": item.get("marker", ""),
+            "prov": [{"page_no": 1, "bbox": item["bbox"]}],
+        }
+        for i, item in enumerate(items)
+    ]
+    layout = {"body": {"children": [{"$ref": t["self_ref"]} for t in texts]}, "texts": texts}
+    parsed = from_layout(layout, ["● JavaScript 代码量很少。 1"], tmp_path)
+    assert [(e.kind, e.text) for e in parsed.elements] == [("bullet", "JavaScript 代码量很少。")]
+    assert not parsed.notices
+
+
 def test_missing_text_is_reported_even_when_page_contains_an_image(tmp_path):
     Image.new("RGB", (600, 800), "white").save(tmp_path / "page-1.png")
     layout = {
