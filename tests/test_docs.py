@@ -1,5 +1,6 @@
 import re
 import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 from urllib.parse import unquote
@@ -105,3 +106,24 @@ def test_documentation_checks_work_without_local_archive(tmp_path, monkeypatch):
     test_full_validation_instructions_enable_models_and_ocr()
     with pytest.raises(pytest.skip.Exception, match="本地 docs"):
         test_usage_confirmation_matches_the_page()
+
+
+def test_local_document_paths_are_not_in_git_index_or_active_history():
+    if shutil.which("git") is None:
+        pytest.skip("Git 不可用，源码归档不检查提交历史")
+    repository = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], cwd=ROOT, capture_output=True, text=True
+    )
+    if repository.returncode or Path(repository.stdout.strip()).resolve() != ROOT.resolve():
+        pytest.skip("当前为无 Git 元数据的源码归档")
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=ROOT, text=True)
+
+    assert not git("ls-files", "--", "docs/", "doc/").strip()
+    assert not git("log", "--all", "--format=", "--name-only", "--", "docs/", "doc/").strip()
+    # Some local tools retain direct tree refs that git log does not traverse.
+    for ref in git("for-each-ref", "--format=%(objectname) %(objecttype)").splitlines():
+        oid, kind = ref.split()
+        if kind == "tree":
+            assert not git("ls-tree", "-r", "--name-only", oid, "--", "docs", "doc").strip()
