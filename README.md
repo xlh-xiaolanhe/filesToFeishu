@@ -34,6 +34,8 @@ test -f .env || cp .env.example .env
 
 ## 开发与验证
 
+修改项目前先阅读 [项目 Agent 规则](AGENTS.md)，其中约定模块边界、格式扩展、Python 规范和交付要求。
+
 在已准备依赖的项目根目录执行：
 
 ```sh

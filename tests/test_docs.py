@@ -7,7 +7,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_document_links_and_iteration_status_are_consistent():
-    paths = [ROOT / "README.md", ROOT / "THIRD_PARTY.md", *ROOT.joinpath("docs").rglob("*.md")]
+    paths = [
+        ROOT / "AGENTS.md",
+        ROOT / "README.md",
+        ROOT / "THIRD_PARTY.md",
+        *ROOT.joinpath("docs").rglob("*.md"),
+    ]
     for path in paths:
         text = path.read_text(encoding="utf-8")
         assert text.startswith("# "), path
