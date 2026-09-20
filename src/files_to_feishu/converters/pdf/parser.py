@@ -13,6 +13,7 @@ from ...models import Element, Notice, ParsedDocument, UserError
 from .cleanup import is_page_number, list_text, page_without_numbers, source_list_markers
 from .code import contains, extract_code_regions, language_of, layout_bounds
 from .continuation import merge_cross_page_code
+from .headings import assign_heading_levels
 
 
 def inspect_pdf(source: Path, max_bytes: int, max_pages: int) -> list[str]:
@@ -81,6 +82,7 @@ def from_layout(
     code_regions = code_regions or []
     emitted_codes: set[int] = set()
     furniture_ids: set[int] = set()
+    heading_labels: dict[int, str] = {}
     page_sizes: dict[int, tuple[float, float]] = {}
     page_numbers: dict[int, list[list[float]]] = {}
     list_markers = source_list_markers(source, layout) if source else {}
@@ -210,6 +212,7 @@ def from_layout(
             elif label in {"title", "section_header"}:
                 element.kind = "heading"
                 element.level = min(max(int(item.get("level", 1)), 1), 6)
+                heading_labels[id(element)] = label
             elif label == "list_item":
                 element.kind = "ordered" if item.get("enumerated") else "bullet"
                 element.text = list_text(item, list_markers)
@@ -330,7 +333,8 @@ def from_layout(
         notices=notices,
         page_images=[f"page-{p}.png" for p in range(1, len(texts) + 1)],
     )
-    return merge_cross_page_code(parsed, page_sizes, furniture_ids)
+    parsed = merge_cross_page_code(parsed, page_sizes, furniture_ids)
+    return assign_heading_levels(parsed, heading_labels, source)
 
 
 class DoclingParser:

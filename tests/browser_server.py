@@ -37,6 +37,22 @@ def code_preview_fixture(source, assets, progress):
     )
 
 
+def heading_preview_fixture(source, assets, progress):
+    return ParsedDocument(
+        pages=2,
+        page_images=render_pages(source, assets),
+        elements=[
+            Element(kind="heading", page=1, text="TypeScript 快速上手", level=1),
+            Element(kind="heading", page=1, text="七、常用类型与语法", level=2),
+            Element(kind="heading", page=1, text="9. 一个特殊情况", level=3),
+            Element(kind="heading", page=2, text="代码段1（正常）", level=4),
+            Element(kind="heading", page=2, text="代码段2（特殊）", level=4),
+            Element(kind="heading", page=2, text="为什么会这样？", level=4),
+            Element(kind="heading", page=2, text="10. 复习类相关知识", level=3),
+        ],
+    )
+
+
 if __name__ == "__main__":
     with TemporaryDirectory(prefix="pdf-browser-") as data:
         app = create_app(
@@ -52,4 +68,6 @@ if __name__ == "__main__":
         app.state.service.client = MemoryFeishu()
         if os.getenv("TEST_CODE_PREVIEW") == "1":
             app.state.service.parser = code_preview_fixture
+        if os.getenv("TEST_HEADING_PREVIEW") == "1":
+            app.state.service.parser = heading_preview_fixture
         uvicorn.run(app, host="127.0.0.1", port=8766)

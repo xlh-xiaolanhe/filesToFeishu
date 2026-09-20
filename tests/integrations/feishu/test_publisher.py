@@ -362,6 +362,21 @@ def test_verify_detects_duplicate_cell_text_even_with_original_blocks_intact(pub
         publisher().verify("doc1", **journal["verified"]["result"])
 
 
+def test_native_heading_levels_are_published_and_verified(publishing):
+    client, journal, publisher, args = publishing
+    args[0].elements = [
+        Element(kind="heading", page=1, text="Chapter", level=1),
+        Element(kind="heading", page=1, text="Section", level=2),
+        Element(kind="heading", page=2, text="Code example", level=3),
+    ]
+    publisher().publish(*args)
+    roots = journal["verified"]["result"]["roots"]
+    assert [client.data[block]["block_type"] for block in roots[:3]] == [3, 4, 5]
+    client.data[roots[2]]["block_type"] = 3
+    with pytest.raises(UserError, match="标题等级"):
+        publisher().verify("doc1", **journal["verified"]["result"])
+
+
 def test_lost_write_response_is_never_repeated(publishing):
     client, journal, publisher, args = publishing
     client.lost_response = True

@@ -153,7 +153,11 @@ function preview() {
       }
       else if(item.kind==="table") {const table=element("table"); for(const row of item.rows){const tr=element("tr");for(const cell of row)tr.append(element("td",cell));table.append(tr);}content.append(table);}
       else if(["bullet","ordered"].includes(item.kind)){const tag=item.kind==="ordered"?"OL":"UL";let list=content.lastElementChild;if(list?.tagName!==tag){list=element(tag.toLowerCase());content.append(list);}list.append(element("li",item.text));}
-      else content.append(element(item.kind==="heading"?"h3":"p",item.text));
+      else if(item.kind==="heading") {
+        const level = Math.min(6, Math.max(1, Number(item.level) || 1));
+        content.append(element(`h${level}`, item.text, "document-heading"));
+      }
+      else content.append(element("p",item.text));
     }
     right.append(content);pair.append(left,right);$("preview").append(pair);
   }

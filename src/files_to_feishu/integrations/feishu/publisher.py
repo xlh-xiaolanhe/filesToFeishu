@@ -300,6 +300,7 @@ class Publisher:
                             "kind": "code" if element.kind == "code" else "text",
                             "text": block_text(n),
                             "parent": doc,
+                            "block_type": n["block_type"],
                             **(
                                 {"language": n["code"]["style"].get("language")}
                                 if element.kind == "code"
@@ -372,6 +373,12 @@ class Publisher:
             if not block:
                 raise UserError("核对失败：远端缺少已写入的内容。")
             if kind in {"text", "code"}:
+                if (
+                    kind == "text"
+                    and item.get("block_type") is not None
+                    and block.get("block_type") != item["block_type"]
+                ):
+                    raise UserError("核对失败：远端标题等级或文字块类型已改变。")
                 if item["parent"] != doc:
                     cell_children.setdefault(item["parent"], []).append(item["id"])
                 if block_text(block) != item["text"] or block.get("parent_id") != item["parent"]:

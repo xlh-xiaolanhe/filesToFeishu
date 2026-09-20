@@ -6,6 +6,34 @@ from files_to_feishu.converters.pdf.parser import from_layout, inspect_pdf, rend
 from files_to_feishu.models import UserError
 
 
+def test_headings_without_explicit_levels_keep_chapter_section_and_detail_hierarchy(tmp_path):
+    Image.new("RGB", (600, 800), "white").save(tmp_path / "page-1.png")
+    headings = [
+        ("七、常用类型与语法", 24),
+        ("9. 一个特殊情况", 18),
+        ("代码段1（正常）", 14),
+        ("代码段2（特殊）", 14),
+        ("为什么会这样？", 14),
+        ("10. 复习类相关知识", 18),
+    ]
+    items = [
+        {
+            "self_ref": f"#/texts/{i}",
+            "label": "section_header",
+            "text": text,
+            "prov": [
+                {
+                    "page_no": 1,
+                    "bbox": {"l": 20, "t": 20 + i * 50, "r": 260, "b": 20 + i * 50 + size},
+                }
+            ],
+        }
+        for i, (text, size) in enumerate(headings)
+    ]
+    parsed = from_layout({"texts": items}, [" ".join(t for t, _ in headings)], tmp_path)
+    assert [e.level for e in parsed.elements] == [1, 2, 3, 3, 3, 2]
+
+
 def test_layout_does_not_publish_displaced_list_marker_or_page_number(tmp_path):
     # PDF reading order can put a left-hand list marker after the sentence.
     Image.new("RGB", (600, 800), "white").save(tmp_path / "page-1.png")
