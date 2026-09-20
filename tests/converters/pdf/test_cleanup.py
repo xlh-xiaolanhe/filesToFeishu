@@ -138,3 +138,73 @@ def test_page_containing_only_folio_does_not_trigger_coverage_fallback(tmp_path)
     parsed = from_layout(layout, ["1"], tmp_path)
     assert not parsed.elements
     assert not parsed.notices
+
+
+def test_split_keycaps_rejoin_their_own_rows_without_reordering_other_content(tmp_path):
+    Image.new("RGB", (600, 800), "white").save(tmp_path / "page-1.png")
+    # Layout reading order grouped icons first and their labels afterwards.
+    rows = [
+        ("Intro", 20, 20, 200),
+        ("1⃣", 20, 60, 34),
+        ("2️⃣", 20, 90, 34),
+        ("3⃣", 20, 120, 34),
+        ("Class decorator", 35, 60, 220),
+        ("Property decorator", 35, 90, 220),
+        ("Method decorator", 35, 120, 220),
+        ("Literal symbol 1️⃣ inside a sentence", 20, 160, 280),
+    ]
+    items = [
+        {
+            "self_ref": f"#/texts/{i}",
+            "label": "text",
+            "text": text,
+            "prov": [{"page_no": 1, "bbox": {"l": left, "t": top, "r": right, "b": top + 12}}],
+        }
+        for i, (text, left, top, right) in enumerate(rows)
+    ]
+    parsed = from_layout({"texts": items}, [" ".join(r[0] for r in rows)], tmp_path)
+    assert [e.text for e in parsed.elements] == [
+        "Intro",
+        "1. Class decorator",
+        "2. Property decorator",
+        "3. Method decorator",
+        "Literal symbol 1️⃣ inside a sentence",
+    ]
+    assert not parsed.notices
+
+
+@pytest.mark.parametrize("prefix,number", [("1⃣", 1), ("2️⃣", 2), ("①", 1), ("⑳", 20)])
+def test_numeric_prefixes_become_plain_numbers_but_code_and_literals_stay_intact(prefix, number):
+    from files_to_feishu.converters.pdf.cleanup import normalize_number_markers
+
+    heading = Element(kind="heading", page=1, level=3, text=f"{prefix} Example")
+    code = Element(kind="code", page=1, text=f"{prefix}\n  print('keep')")
+    prose = Element(kind="text", page=1, text=f"Symbol {prefix} and ✓")
+    result = normalize_number_markers([heading, code, prose])
+    assert result[0] is heading
+    assert (heading.kind, heading.level, heading.text) == ("heading", 3, f"{number}. Example")
+    assert result[1].text == f"{prefix}\n  print('keep')"
+    assert result[2].text == f"Symbol {prefix} and ✓"
+
+
+@pytest.mark.parametrize("case", ["other_page", "other_column", "other_line", "ambiguous", "code"])
+def test_detached_numbers_never_join_unrelated_or_ambiguous_content(case):
+    from files_to_feishu.converters.pdf.cleanup import normalize_number_markers
+
+    marker = Element(kind="text", page=1, text="1️⃣", bbox=[20, 40, 32, 52])
+    other = Element(kind="text", page=1, text="Unchanged", bbox=[33, 40, 100, 52])
+    if case == "other_page":
+        other.page = 2
+    elif case == "other_column":
+        other.bbox = [200, 40, 280, 52]
+    elif case == "other_line":
+        other.bbox = [33, 60, 100, 72]
+    elif case == "code":
+        other.kind = "code"
+    elements = [marker, other]
+    if case == "ambiguous":
+        elements.append(other.model_copy())
+    result = normalize_number_markers(elements)
+    assert len(result) == len(elements)
+    assert result[0].text == "1."
+    assert all(e.text == "Unchanged" for e in result[1:])

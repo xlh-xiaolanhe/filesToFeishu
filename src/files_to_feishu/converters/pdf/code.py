@@ -102,29 +102,42 @@ def native_code(textpage, bounds: list[float], page_height: float) -> str:
         char = textpage.get_text_range(i, 1)
         if not char or char.isspace() or char == "\x00":
             continue
-        left, b, r, t = textpage.get_charbox(i)
+        # Logical boxes share a baseline and advance width; ink bounds vary for
+        # punctuation, Latin letters and Chinese comments on the same line.
+        left, b, r, t = textpage.get_charbox(i, loose=True)
         y = page_height - (t + b) / 2
         if bounds[0] - 1 <= (left + r) / 2 <= bounds[2] + 1 and bounds[1] - 1 <= y <= bounds[3] + 1:
-            chars.append((y, left, char, t - b))
+            chars.append((y, left, char, t - b, r - left))
     if not chars:
         return raw
-    tolerance = max(3, median(c[3] for c in chars) * 0.85)
+    tolerance = max(3, median(c[3] for c in chars) * 0.5)
     rows: list[list[tuple]] = []
     for char in sorted(chars):
         if not rows or abs(char[0] - median(c[0] for c in rows[-1])) > tolerance:
             rows.append([char])
         else:
             rows[-1].append(char)
-    if len(rows) != len(lines):
-        return raw  # Never reconstruct characters by guessing if line geometry is ambiguous.
     rows = [sorted(row, key=lambda c: c[1]) for row in rows]
+    # Bounded text follows PDF emission order, which can put toolbar text last.
+    # Equal line counts do not imply equal order. Match actual characters before
+    # assigning geometry; consume repeated lines (e.g. braces) in source order.
+    remaining = list(enumerate(rows))
+    matched = []
+    previous = -1
+    for line in lines:
+        signature = "".join(line.split())
+        candidates = [
+            (index, row) for index, row in remaining if "".join(c[2] for c in row) == signature
+        ]
+        if not candidates:
+            return raw  # Keep source whitespace if geometry cannot be matched safely.
+        index, row = next((pair for pair in candidates if pair[0] > previous), candidates[0])
+        matched.append(row)
+        remaining = [pair for pair in remaining if pair[0] != index]
+        previous = index
+    rows = matched
     base = min(row[0][1] for row in rows)
-    advances = [
-        b[1] - a[1]
-        for row in rows
-        for a, b in zip(row, row[1:], strict=False)
-        if a[2].isascii() and b[2].isascii() and 2 < b[1] - a[1] < 20
-    ]
+    advances = [c[4] for row in rows for c in row if c[2].isascii() and c[4] > 0]
     pitch = median(advances) if advances else 6
     ys = [median(c[0] for c in row) for row in rows]
     gaps = [b - a for a, b in zip(ys, ys[1:], strict=False) if b - a > 2]

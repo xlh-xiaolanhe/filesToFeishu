@@ -10,7 +10,13 @@ from PIL import Image
 from pypdf import PdfReader
 
 from ...models import Element, Notice, ParsedDocument, UserError
-from .cleanup import is_page_number, list_text, page_without_numbers, source_list_markers
+from .cleanup import (
+    is_page_number,
+    list_text,
+    normalize_number_markers,
+    page_without_numbers,
+    source_list_markers,
+)
 from .code import contains, extract_code_regions, language_of, layout_bounds
 from .continuation import merge_cross_page_code
 from .headings import assign_heading_levels
@@ -326,7 +332,7 @@ def from_layout(
             # Keep recovered code editable even when unrelated page content needs fallback.
             result.extend(e for e in page_elements if e.kind == "code")
         else:
-            result.extend(page_elements)
+            result.extend(normalize_number_markers(page_elements))
     parsed = ParsedDocument(
         pages=len(texts),
         elements=result,

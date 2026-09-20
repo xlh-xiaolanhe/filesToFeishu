@@ -6,9 +6,69 @@ from pathlib import Path
 import pypdfium2 as pdfium
 from PIL import Image, ImageDraw
 
+from ...models import Element
 from .code import layout_bounds
 
 BULLETS = "●•◦▪▫‣⁃"
+
+
+def normalize_number_markers(elements: list[Element]) -> list[Element]:
+    """Replace decorative numeric prefixes and join detached same-line labels.
+
+    Explicit plain numbering preserves the source number even when another
+    ordered list precedes it. Never alter symbols inside code or prose.
+    """
+    prefix = re.compile(r"^\s*(?:([0-9])\ufe0f?\u20e3|([①-⑳]))\s*")
+    replacements: dict[int, Element] = {}
+    consumed: set[int] = set()
+    for index, element in enumerate(elements):
+        if index in consumed or element.kind not in {"text", "heading", "bullet", "ordered"}:
+            continue
+        match = prefix.match(element.text)
+        if not match:
+            continue
+        number = match[1] if match[1] is not None else str(ord(match[2]) - ord("①") + 1)
+        text = element.text[match.end() :]
+        target = element
+        if not text and len(element.bbox) == 4:
+            _, top, right, bottom = element.bbox
+            height = bottom - top
+            candidates = []
+            for other_index, other in enumerate(elements):
+                if (
+                    other_index == index
+                    or other_index in consumed
+                    or other.page != element.page
+                    or len(other.bbox) != 4
+                    or other.kind not in {"text", "bullet", "ordered"}
+                    or not other.text.strip()
+                    or prefix.match(other.text)
+                ):
+                    continue
+                other_left, other_top, _, other_bottom = other.bbox
+                overlap = min(bottom, other_bottom) - max(top, other_top)
+                if (
+                    -1 <= other_left - right <= height * 1.5
+                    and overlap > min(height, other_bottom - other_top) * 0.5
+                ):
+                    candidates.append((other_index, other))
+            if len(candidates) == 1:
+                other_index, target = candidates[0]
+                consumed.add(other_index)
+                text = target.text
+        # Mutate the original target so heading/furniture identity stays valid.
+        target.text = f"{number}. {text}".rstrip()
+        if target.kind in {"bullet", "ordered"}:
+            target.kind = "text"
+        if target is not element:
+            target.bbox = [
+                min(element.bbox[0], target.bbox[0]),
+                min(element.bbox[1], target.bbox[1]),
+                max(element.bbox[2], target.bbox[2]),
+                max(element.bbox[3], target.bbox[3]),
+            ]
+        replacements[index] = target
+    return [replacements.get(i, element) for i, element in enumerate(elements) if i not in consumed]
 
 
 def source_list_markers(source: Path, layout: dict) -> dict[str, str]:

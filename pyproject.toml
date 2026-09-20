@@ -1,6 +1,6 @@
 [project]
 name = "files-to-feishu"
-version = "0.2.4"
+version = "0.2.5"
 description = "Local PDF preview and editable Feishu wiki import"
 requires-python = ">=3.12,<3.13"
 dependencies = [

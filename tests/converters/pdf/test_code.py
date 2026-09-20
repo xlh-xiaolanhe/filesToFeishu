@@ -192,3 +192,32 @@ def test_real_local_ocr_preserves_english_code_tokens():
     assert "obj.heigth" in text
     assert "obj.height" not in text
     assert "\n" in text
+
+
+def test_native_indentation_matches_text_when_toolbar_is_emitted_last(tmp_path):
+    source = tmp_path / "toolbar.pdf"
+    pdf = canvas.Canvas(str(source), pagesize=(600, 800))
+    pdf.setFont("Courier", 12)
+    lines = [
+        "// example",
+        "function example() {",
+        "  // preserve this nesting",
+        "  function inner() {",
+        "    return 1",
+        "  }",
+        "}",
+    ]
+    for i, line in enumerate(lines):
+        pdf.drawString(65, 690 - i * 20, line)
+    # PDF drawing order differs from geometry: the toolbar is emitted last.
+    pdf.drawString(85, 725, "Example TypeScript")
+    pdf.save()
+    with pdfium.PdfDocument(source) as doc:
+        page = doc[0]
+        text = page.get_textpage()
+        try:
+            result = native_code(text, [50, 60, 550, 260], 800)
+        finally:
+            text.close()
+            page.close()
+    assert result.splitlines()[: len(lines)] == lines
