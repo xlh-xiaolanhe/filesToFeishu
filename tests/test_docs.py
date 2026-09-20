@@ -1,7 +1,10 @@
 import re
+import shutil
 import tomllib
 from pathlib import Path
 from urllib.parse import unquote
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,15 +58,20 @@ def test_current_version_matches_documentation_lock_and_page():
         "docs/guides/pdf-to-feishu.md",
         "docs/architecture/input-formats.md",
     ):
+        if name.startswith("docs/") and not (ROOT / "docs").exists():
+            continue
         text = (ROOT / name).read_text()
         declared = re.search(r"(?:当前|适用)版本：\*{0,2}v([\d.]+)", text)
         assert declared and declared[1] == version, name
     page = (ROOT / "src/files_to_feishu/templates/index.html").read_text()
     assert f"本地转换 · v{version}</span>" in page
-    assert (ROOT / "docs/validation" / f"v{version}.md").is_file()
+    if (ROOT / "docs").exists():
+        assert (ROOT / "docs/validation" / f"v{version}.md").is_file()
 
 
 def test_usage_confirmation_matches_the_page():
+    if not (ROOT / "docs").exists():
+        pytest.skip("本地 docs 未随 Git 检出，跳过指南文案专项检查")
     page = (ROOT / "src/files_to_feishu/templates/index.html").read_text()
     label = re.search(r'id="confirmed"[^>]*>([^<]+)', page)
     assert label
@@ -74,3 +82,26 @@ def test_usage_confirmation_matches_the_page():
 def test_full_validation_instructions_enable_models_and_ocr():
     readme = (ROOT / "README.md").read_text()
     assert re.search(r"RUN_PARSER_TESTS=1 RUN_OCR_TESTS=1 .*pytest", readme)
+
+
+def test_documentation_checks_work_without_local_archive(tmp_path, monkeypatch):
+    # Reproduce a fresh checkout that has public entry points but no private docs.
+    for name in (
+        "AGENTS.md",
+        "README.md",
+        "THIRD_PARTY.md",
+        "pyproject.toml",
+        "uv.lock",
+        "start.sh",
+        "start.command",
+        "src/files_to_feishu/templates/index.html",
+    ):
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / name, target)
+    monkeypatch.setattr("tests.test_docs.ROOT", tmp_path)
+    test_document_links_and_iteration_status_are_consistent()
+    test_current_version_matches_documentation_lock_and_page()
+    test_full_validation_instructions_enable_models_and_ocr()
+    with pytest.raises(pytest.skip.Exception, match="本地 docs"):
+        test_usage_confirmation_matches_the_page()

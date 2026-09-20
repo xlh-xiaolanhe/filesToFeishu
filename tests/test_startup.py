@@ -30,6 +30,7 @@ def test_missing_environment_reports_setup_without_modifying_config(checkout, tm
     )
     assert result.returncode == 1
     assert "uv sync --extra parser --locked" in result.stderr
+    assert "配置方法见 README.md" in result.stderr
     assert config.read_text() == "EXISTING_CONFIG=keep\n"
     assert not (checkout / ".data").exists()
 

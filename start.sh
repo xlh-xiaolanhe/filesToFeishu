@@ -10,7 +10,7 @@ if [[ ! -x "$PROJECT_DIR/.venv/bin/python" ]]; then
 未找到项目的 Python 虚拟环境。请先在项目目录完成首次准备：
   uv sync --extra parser --locked
   uv run --extra parser python scripts/download_models.py
-配置方法见 docs/guides/pdf-to-feishu.md，然后重新运行 ./start.sh。
+配置方法见 README.md，然后重新运行 ./start.sh。
 EOF
     exit 1
 fi

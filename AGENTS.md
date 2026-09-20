@@ -3,7 +3,7 @@
 ## 项目与入口
 
 - 本项目是本机预览、校对后导入飞书知识库的工具；当前仅支持文字型 PDF。技术栈为 Python 3.12、FastAPI、Pydantic、SQLite、Docling 和 macOS Vision，前端为原生 HTML/CSS/JavaScript。
-- 当前版本与验证命令以 [README](README.md) 为入口；使用方法见 [使用说明](docs/guides/pdf-to-feishu.md)，模块和扩展设计见 [输入格式扩展说明](docs/architecture/input-formats.md)。不要把历史版本文档当作当前操作手册。
+- 当前版本与验证命令以 [README](README.md) 为入口；本地 `docs/guides/pdf-to-feishu.md` 和 `docs/architecture/input-formats.md` 提供详细使用与扩展说明。`docs/` 仅在本地维护，不进入 Git；新检出环境没有该目录是正常情况，启动及基础验证不得依赖它。
 - 首次准备使用 `uv sync --extra parser --locked`，按 README 准备模型与本地配置。日常运行 `./start.sh`，访问 `http://127.0.0.1:8765`；保持单进程、单后台执行线程，不启用多个 worker 或自动重载去重放任务。
 
 ## 架构边界与功能演进
@@ -44,6 +44,6 @@ RUN_PARSER_TESTS=1 RUN_OCR_TESTS=1 .venv/bin/pytest -q
 git diff --check
 ```
 
-- 每次改动完成后，都必须创建一个对应的 Git commit，以便后续追踪和回滚；先审查 diff，只暂存本次范围内文件，不撤销、覆盖或顺手提交用户的其他修改。
-- 产品迭代成对维护 `docs/requirements/<版本>.md`、`docs/plans/<版本>.md` 并补验证记录；同步当前指南、功能索引与版本索引，交付快照保留。纯文档/规则收尾不虚增产品版本。
-- `.env`、`.data/`、`.models/`、`.venv/` 和生成产物不进 Git。不把任务数据库、原件或恢复现场当缓存删除；清理只执行用户确认的具体范围，之后核对保留项和服务状态。
+- 每次可跟踪内容改动完成后，都必须创建一个对应的 Git commit，以便后续追踪和回滚；先审查 diff，只暂存本次范围内文件，不撤销、覆盖或顺手提交用户的其他修改。仅更新本地文档不提交文档或制造空提交。
+- 产品迭代在本地成对维护 `docs/requirements/<版本>.md`、`docs/plans/<版本>.md` 并补验证记录；同步本地指南、功能索引与版本索引，交付快照保留。不要用 `git add -f` 提交 `docs/`；根目录 README、AGENTS.md 和源码测试仍跟踪，需提供无 docs 也能使用的入口。纯文档/规则收尾不虚增产品版本。
+- `.env`、`.data/`、`.models/`、`.venv/`、`docs/` 和生成产物不进 Git。不把任务数据库、原件或恢复现场当缓存删除；清理只执行用户确认的具体范围，之后核对保留项和服务状态。

@@ -13,3 +13,4 @@ __pycache__/
 output/
 tmp/
 .playwright-cli/
+/docs/
