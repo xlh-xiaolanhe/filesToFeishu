@@ -127,3 +127,23 @@ def test_local_document_paths_are_not_in_git_index_or_active_history():
         oid, kind = ref.split()
         if kind == "tree":
             assert not git("ls-tree", "-r", "--name-only", oid, "--", "docs", "doc").strip()
+
+
+def test_live_feature_baseline_is_reachable_after_history_rewrites():
+    archive = ROOT / "docs/features/pdf-to-feishu.md"
+    if not archive.exists() or shutil.which("git") is None:
+        pytest.skip("本地功能档案或 Git 不可用")
+    repository = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], cwd=ROOT, capture_output=True, text=True
+    )
+    if repository.returncode or Path(repository.stdout.strip()).resolve() != ROOT.resolve():
+        pytest.skip("当前为无 Git 元数据的源码归档")
+    match = re.search(r"首次交付源码基线：Git commit `([0-9a-f]{7,40})`", archive.read_text())
+    assert match, "功能档案缺少首次源码基线"
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", match[1], "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, "功能档案引用的源码基线不在当前提交历史中"
