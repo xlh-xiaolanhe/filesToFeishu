@@ -35,6 +35,20 @@ def test_pdf_converter_does_not_load_feishu_or_web():
     )
 
 
+def test_wechat_converter_does_not_load_pdf_feishu_or_web():
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from files_to_feishu.converters.wechat import WechatConverter; "
+            "import sys; "
+            "assert not any(m.startswith(('files_to_feishu.integrations', 'fastapi', "
+            "'docling', 'files_to_feishu.converters.pdf')) for m in sys.modules)",
+        ],
+        check=True,
+    )
+
+
 def test_existing_serialized_job_remains_readable_after_reorganization(tmp_path):
     store = Store(tmp_path / "jobs.sqlite3")
     job = store.create("legacy.pdf", "source-digest")

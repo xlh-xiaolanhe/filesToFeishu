@@ -2,8 +2,8 @@
 
 ## 项目与入口
 
-- 本项目是本机预览、校对后导入飞书知识库的工具；当前仅支持文字型 PDF。技术栈为 Python 3.12、FastAPI、Pydantic、SQLite、Docling 和 macOS Vision，前端为原生 HTML/CSS/JavaScript。
-- 当前版本与验证命令以 [README](README.md) 为入口；本地 `docs/guides/pdf-to-feishu.md` 和 `docs/architecture/input-formats.md` 提供详细使用与扩展说明。`docs/` 仅在本地维护，不进入 Git；新检出环境没有该目录是正常情况，启动及基础验证不得依赖它。
+- 本项目是本机预览、校对后导入飞书知识库的工具；支持文字型 PDF 和单篇微信公众号文章。技术栈为 Python 3.12、FastAPI、Pydantic、SQLite、Docling、macOS Vision、Beautiful Soup 和 Playwright，前端为原生 HTML/CSS/JavaScript。
+- 当前版本与验证命令以 [README](README.md) 为入口；本地 `docs/guides/pdf-to-feishu.md`、`docs/guides/wechat-to-feishu.md` 和 `docs/architecture/input-formats.md` 提供详细使用与扩展说明。`docs/` 仅在本地维护，不进入 Git；新检出环境没有该目录是正常情况，启动及基础验证不得依赖它。
 - 首次准备使用 `uv sync --extra parser --locked`，按 README 准备模型与本地配置。日常运行 `./start.sh`，访问 `http://127.0.0.1:8765`；保持单进程、单后台执行线程，不启用多个 worker 或自动重载去重放任务。
 
 ## 架构边界与功能演进
@@ -14,6 +14,7 @@
 - 新格式按 `converters/<格式>/` 与 `tests/converters/<格式>/` 成对归档，通用能力放在实际使用它的公共模块；第二种来源落地时再抽取必要接口，不预建未使用的插件框架或注册表。
 - 新来源先明确输入、来源元数据、素材/原件、去重与预览规则。现有 `page/bbox/page_images` 带 PDF 语义，不能给网页伪造页号来复用；演进共享模型时必须兼容历史 JSON、数据库任务和已有发布日志。
 - 不随意改动 `original-pdf:*` 等持久化检查点键。确需变更时提供兼容读取或明确迁移，并测试旧任务恢复、重复导入和中断续接。
+- 公众号验证窗口使用独立临时 Playwright 会话，所有操作归属单后台线程；不读取个人浏览器配置或保存登录凭证。取消和重启不能自动重放获取。素材访问只能来自当前任务清单，外链、重定向和浏览器请求都需校验；离线 ZIP 与页面预览不得执行来源 HTML。
 
 ## 内容与写入约束
 

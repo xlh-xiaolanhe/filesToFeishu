@@ -4,7 +4,15 @@ import hashlib
 import pytest
 
 from files_to_feishu.integrations.feishu import Publisher
-from files_to_feishu.models import Element, ParsedDocument, Target, UncertainWrite, UserError
+from files_to_feishu.models import (
+    Asset,
+    Element,
+    ParsedDocument,
+    Target,
+    TextRun,
+    UncertainWrite,
+    UserError,
+)
 
 
 class MemoryFeishu:
@@ -439,3 +447,374 @@ def test_attachment_is_verified_again_after_archiving(publishing):
     with pytest.raises(UserError, match="归档后"):
         publisher().publish(*args)
     assert journal["move"]["state"] == "done"
+
+
+def test_wechat_rich_text_quote_table_and_original_gif_zip_are_preserved(publishing, tmp_path):
+    client, journal, publisher, args = publishing
+    gif = b"GIF89a-original-animation-two-frames"
+    (tmp_path / "figure.gif").write_bytes(gif)
+    archive = tmp_path / "article.zip"
+    archive.write_bytes(b"PK-offline-article-and-original-materials")
+    runs = [
+        TextRun(text="Bold", bold=True),
+        TextRun(text=" emphasis", italic=True, strike=True),
+        TextRun(text=" code", inline_code=True, link="https://example.org/reference?q=1#code"),
+    ]
+    text = "".join(run.text for run in runs)
+    parsed = ParsedDocument(
+        source_kind="wechat",
+        assets=[
+            Asset(name="figure.gif", media_type="image/gif", digest=hashlib.sha256(gif).hexdigest())
+        ],
+        elements=[
+            Element(kind="heading", text="Article", level=2),
+            Element(kind="text", text=text, runs=runs),
+            Element(kind="quote", text="Quoted", runs=[TextRun(text="Quoted", italic=True)]),
+            Element(kind="table", rows=[[text]], table_runs=[[runs]]),
+            Element(kind="image", asset="figure.gif"),
+        ],
+    )
+    result = publisher().publish(
+        parsed,
+        archive,
+        tmp_path,
+        "Article",
+        args[4],
+        hashlib.sha256(archive.read_bytes()).hexdigest(),
+        "article.zip",
+    )
+    assert result["wiki_token"] == "child"
+    assert "original-wechat:upload" in journal
+    assert not any(key.startswith("original-pdf") for key in journal)
+    assert gif in client.files.values()
+    assert archive.read_bytes() in client.files.values()
+    roots = journal["verified"]["result"]["roots"]
+    assert [client.data[node]["block_type"] for node in roots] == [4, 2, 15, 31, 27, 33]
+    paragraph = client.data[roots[1]]["text"]["elements"]
+    assert paragraph[0]["text_run"]["text_element_style"] == {"bold": True}
+    assert paragraph[1]["text_run"]["text_element_style"] == {
+        "italic": True,
+        "strikethrough": True,
+    }
+    assert paragraph[2]["text_run"]["text_element_style"]["link"]["url"].endswith("?q=1#code")
+    cell = next(block for block in client.data.values() if block["block_type"] == 32)
+    assert client.data[cell["children"][0]]["text"]["elements"] == paragraph
+    paragraph[0]["text_run"]["text_element_style"].update(
+        italic=False, inline_code=False, strikethrough=False, link={}
+    )
+    publisher().verify("doc1", **journal["verified"]["result"])
+    paragraph[2]["text_run"]["text_element_style"]["link"]["url"] = "https://example.org/changed"
+    with pytest.raises(UserError, match="超链接"):
+        publisher().verify("doc1", **journal["verified"]["result"])
+
+
+def test_nested_lists_keep_start_number_and_verify_child_order(publishing):
+    client, journal, publisher, args = publishing
+    args[0].elements = [
+        Element(kind="ordered", text="Step 7", list_start=7),
+        Element(kind="bullet", text="Child A", list_depth=1),
+        Element(kind="ordered", text="Grandchild", list_depth=2, list_start=3),
+        Element(kind="bullet", text="Child B", list_depth=1),
+        Element(kind="text", text="Child detail", list_depth=2),
+        Element(kind="ordered", text="Step 8"),
+    ]
+    publisher().publish(*args)
+    first, second, _attachment = client.data["doc1"]["children"]
+    parent = client.data[first]
+    assert parent["ordered"]["style"]["sequence"] == "7"
+    assert client.data[second]["ordered"]["elements"][0]["text_run"]["content"] == "Step 8"
+    a, b = parent["children"]
+    grandchild = client.data[client.data[a]["children"][0]]
+    assert grandchild["ordered"]["style"]["sequence"] == "3"
+    assert client.data[b]["children"]
+    grandchild["ordered"]["style"]["sequence"] = "1"
+    with pytest.raises(UserError, match="起始序号"):
+        publisher().verify("doc1", **journal["verified"]["result"])
+    grandchild["ordered"]["style"]["sequence"] = "3"
+    parent["children"].reverse()
+    with pytest.raises(UserError, match="嵌套列表"):
+        publisher().verify("doc1", **journal["verified"]["result"])
+    parent["children"].reverse()
+    grandchild["children"] = ["unexpected-child"]
+    with pytest.raises(UserError, match="嵌套列表"):
+        publisher().verify("doc1", **journal["verified"]["result"])
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_lost_nested_rich_append_is_reconciled_without_repeating(publishing, tamper):
+    client, journal, publisher, args = publishing
+    args[0].elements = [
+        Element(kind="bullet", text="Parent"),
+        Element(
+            kind="ordered",
+            text="Nested",
+            list_depth=1,
+            list_start=4,
+            runs=[TextRun(text="Nested", bold=True)],
+        ),
+    ]
+    original = client.request
+
+    def lost(method, path, **kwargs):
+        result = original(method, path, **kwargs)
+        if "Nested" in str(kwargs.get("json", {})):
+            raise UncertainWrite("lost nested response")
+        return result
+
+    client.request = lost
+    with pytest.raises(UncertainWrite, match="lost nested"):
+        publisher().publish(*args)
+    nested = next(block for block in client.data.values() if block["block_type"] == 13)
+    if tamper:
+        nested["ordered"]["elements"][0]["text_run"]["text_element_style"]["bold"] = False
+    before = copy.deepcopy(client.data)
+    client.request = original
+    if tamper:
+        with pytest.raises(UncertainWrite, match="不确定"):
+            publisher().publish(*args)
+        assert client.data == before
+    else:
+        assert publisher().publish(*args)["wiki_token"] == "child"
+        assert sum(block["block_type"] == 13 for block in client.data.values()) == 1
+    assert client.created == 1
+
+
+@pytest.mark.parametrize("kind", ["image", "table", "file"])
+def test_lost_media_or_table_placeholder_response_is_reconciled(publishing, kind):
+    client, journal, publisher, args = publishing
+    original = client.request
+    block_type = {"image": 27, "table": 31, "file": 23}[kind]
+    dropped = False
+
+    def lost(method, path, **kwargs):
+        nonlocal dropped
+        result = original(method, path, **kwargs)
+        children = kwargs.get("json", {}).get("children", [])
+        if not dropped and any(child["block_type"] == block_type for child in children):
+            dropped = True
+            raise UncertainWrite("lost placeholder response")
+        return result
+
+    client.request = lost
+    with pytest.raises(UncertainWrite):
+        publisher().publish(*args)
+    client.request = original
+    assert publisher().publish(*args)["wiki_token"] == "child"
+    assert sum(block["block_type"] == block_type for block in client.data.values()) == 1
+
+
+def test_legacy_pdf_journal_and_verified_snapshot_resume_unchanged(publishing):
+    client, journal, publisher, args = publishing
+    result = publisher().publish(*args)
+    assert "original-pdf:create" in journal
+    assert not any(key.startswith("original-wechat") for key in journal)
+    for key in list(journal):
+        if key.endswith(":before"):
+            del journal[key]
+    expected = journal["verified"]["result"]["expected"]
+    for item in expected:
+        item.pop("rich_text", None)
+        item.pop("sequence", None)
+        if item["kind"] not in {"text", "code"}:
+            item.pop("parent", None)
+    before = copy.deepcopy(client.data)
+    publisher().verify("doc1", **journal["verified"]["result"])
+    assert publisher().publish(*args) == result
+    assert client.data == before
+
+
+def test_rich_long_list_keeps_one_item_and_run_boundaries_do_not_affect_verification(publishing):
+    client, journal, publisher, args = publishing
+    text = "long list " * 500
+    args[0].elements = [
+        Element(kind="ordered", text=text, runs=[TextRun(text=text, bold=True)], list_start=9)
+    ]
+    publisher().publish(*args)
+    block = next(block for block in client.data.values() if block["block_type"] == 13)
+    assert len(block["ordered"]["elements"]) > 1
+    block["ordered"]["elements"] = [
+        {"text_run": {"content": text, "text_element_style": {"bold": True}}}
+    ]
+    publisher().verify("doc1", **journal["verified"]["result"])
+
+
+def test_invalid_rich_or_nested_content_is_rejected_before_creation(publishing):
+    client, journal, publisher, args = publishing
+    args[0].elements = [Element(kind="bullet", text="Missing parent", list_depth=1)]
+    with pytest.raises(UserError, match="缺少父项"):
+        publisher().publish(*args)
+    args[0].elements = [Element(kind="text", text="Mismatch", runs=[TextRun(text="Different")])]
+    with pytest.raises(UserError, match="不一致"):
+        publisher().publish(*args)
+    assert not journal
+    assert client.created == 0
+
+
+@pytest.mark.parametrize("kind", ["original", "image"])
+@pytest.mark.parametrize("problem", ["missing", "empty", "oversize"])
+def test_missing_or_oversized_files_fail_before_remote_creation(publishing, kind, problem):
+    client, journal, publisher, args = publishing
+    if kind == "original":
+        args[0].source_kind = "wechat"
+        args[0].elements = []
+        source = args[1].with_suffix(".zip")
+        source.write_bytes(b"PK-archive")
+        args = (args[0], source, *args[2:])
+    else:
+        source = args[2] / "figure-1.png"
+    if problem == "missing":
+        source.unlink()
+    else:
+        with source.open("wb") as handle:
+            handle.truncate(0 if problem == "empty" else 20 * 1024 * 1024 + 1)
+    with pytest.raises(UserError, match="缺失|20 MB"):
+        publisher().publish(*args)
+    assert client.created == 0
+    assert not journal
+    assert not client.data
+
+
+@pytest.fixture
+def wechat_media(publishing, tmp_path):
+    from io import BytesIO
+    from zipfile import ZipFile
+
+    from PIL import Image
+
+    client, journal, publisher, args = publishing
+    output = BytesIO()
+    first = Image.new("RGB", (2, 2), "red")
+    second = Image.new("RGB", (2, 2), "blue")
+    first.save(output, format="GIF", save_all=True, append_images=[second], duration=100, loop=0)
+    payload = output.getvalue()
+    image = tmp_path / "animation.gif"
+    image.write_bytes(payload)
+    source = tmp_path / "article.zip"
+    with ZipFile(source, "w") as archive:
+        archive.writestr("article.html", '<img src="assets/animation.gif">')
+        archive.writestr("assets/animation.gif", payload)
+    parsed = ParsedDocument(
+        source_kind="wechat",
+        elements=[Element(kind="image", asset=image.name)],
+        assets=[
+            Asset(
+                name=image.name, media_type="image/gif", digest=hashlib.sha256(payload).hexdigest()
+            )
+        ],
+    )
+    return (
+        client,
+        journal,
+        publisher,
+        (
+            parsed,
+            source,
+            tmp_path,
+            "GIF article",
+            args[4],
+            hashlib.sha256(source.read_bytes()).hexdigest(),
+            "article.zip",
+        ),
+    )
+
+
+def test_wechat_gif_bytes_are_verified_before_and_after_archiving(wechat_media):
+    from io import BytesIO
+
+    from PIL import Image
+
+    client, journal, publisher, args = wechat_media
+    downloads = []
+    original = client.download_digest
+
+    def download(token):
+        downloads.append((token, bool(client.target)))
+        return original(token)
+
+    client.download_digest = download
+    publisher().publish(*args)
+    image = next(
+        item for item in journal["verified"]["result"]["expected"] if item["kind"] == "image"
+    )
+    assert image["asset_digest"] == args[0].assets[0].digest
+    assert downloads.count((image["token"], False)) == 1
+    assert downloads.count((image["token"], True)) == 1
+    with Image.open(BytesIO(client.files[image["token"]])) as remote:
+        assert remote.n_frames == 2
+
+
+@pytest.mark.parametrize("failure", ["first_frame_only", "download_error"])
+def test_wechat_image_token_alone_is_not_enough_to_pass_verification(wechat_media, failure):
+    from io import BytesIO
+
+    from PIL import Image
+
+    client, journal, publisher, args = wechat_media
+    publisher().publish(*args)
+    verified = journal["verified"]["result"]
+    image = next(item for item in verified["expected"] if item["kind"] == "image")
+    if failure == "first_frame_only":
+        output = BytesIO()
+        with Image.open(BytesIO(client.files[image["token"]])) as animated:
+            animated.save(output, format="GIF")
+        client.files[image["token"]] = output.getvalue()
+    else:
+        original = client.download_digest
+
+        def download(token):
+            if token == image["token"]:
+                raise UserError("图片下载失败")
+            return original(token)
+
+        client.download_digest = download
+    with pytest.raises(UserError, match="图片"):
+        publisher().verify("doc1", **verified)
+
+
+@pytest.mark.parametrize("failure", ["missing_manifest", "changed_local_image"])
+def test_wechat_image_manifest_is_checked_before_any_remote_mutation(wechat_media, failure):
+    client, journal, publisher, args = wechat_media
+    if failure == "missing_manifest":
+        args[0].assets = []
+    else:
+        (args[2] / "animation.gif").write_bytes(b"changed bytes")
+    with pytest.raises(UserError, match="素材摘要|摘要不一致"):
+        publisher().publish(*args)
+    assert client.created == 0
+    assert not journal
+
+
+def test_image_digest_download_is_cached_only_within_one_verification(wechat_media):
+    client, journal, publisher, args = wechat_media
+    publisher().publish(*args)
+    verified = copy.deepcopy(journal["verified"]["result"])
+    image = next(item for item in verified["expected"] if item["kind"] == "image")
+    verified["expected"].append(copy.deepcopy(image))
+    downloads = []
+    original = client.download_digest
+
+    def download(token):
+        downloads.append(token)
+        return original(token)
+
+    client.download_digest = download
+    instance = publisher()
+    instance.verify("doc1", **verified)
+    assert downloads == [image["token"]]
+    instance.verify("doc1", **verified)
+    assert downloads == [image["token"], image["token"]]
+
+
+def test_pdf_and_legacy_expected_media_do_not_require_image_downloads(publishing):
+    client, journal, publisher, args = publishing
+    original = client.download_digest
+
+    def download(token):
+        assert client.files[token] == args[1].read_bytes()
+        return original(token)
+
+    client.download_digest = download
+    publisher().publish(*args)
+    verified = journal["verified"]["result"]
+    assert all("asset_digest" not in item for item in verified["expected"])
+    publisher().verify("doc1", **verified)

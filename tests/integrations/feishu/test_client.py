@@ -207,3 +207,30 @@ def test_wiki_membership_error_is_distinct_from_api_scope():
     )
     with pytest.raises(UserError, match="知识库成员权限.*接口权限不同"):
         client.request("POST", "/wiki/v2/spaces/space/nodes/move_docs_to_wiki", json={})
+
+
+def test_download_redirect_never_forwards_feishu_credentials_to_asset_host():
+    import hashlib
+
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if "tenant_access_token" in request.url.path:
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "private-token", "expire": 7200}
+            )
+        if request.url.host == "open.feishu.cn":
+            assert request.headers["authorization"] == "Bearer private-token"
+            return httpx.Response(302, headers={"Location": "https://media.example.org/file.zip"})
+        assert "authorization" not in request.headers
+        assert b"private-token" not in request.content
+        assert b"private-secret" not in request.content
+        return httpx.Response(200, content=b"original-zip")
+
+    client = FeishuClient(
+        Settings(feishu_app_id="app", feishu_app_secret="private-secret"),
+        httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    assert client.download_digest("file") == hashlib.sha256(b"original-zip").hexdigest()
+    assert len(requests) == 3

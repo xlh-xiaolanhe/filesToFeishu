@@ -22,6 +22,11 @@ HERE = Path(__file__).parent
 class PublishRequest(BaseModel):
     url: str = Field(max_length=2048)
     title: str = Field(default="", max_length=200)
+    confirmed: bool = False
+
+
+class ArticleRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
 
 
 class CodeRequest(BaseModel):
@@ -55,7 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 service.close()
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
-    app = FastAPI(title="PDF → 飞书知识库", lifespan=lifespan)
+    app = FastAPI(title="内容 → 飞书知识库", lifespan=lifespan)
     app.state.service = service
     app.add_middleware(
         TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"]
@@ -129,6 +134,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def jobs():
         return [public(j) for j in store.list()]
 
+    @app.post("/api/jobs/wechat", status_code=202)
+    def article(body: ArticleRequest):
+        return public(service.receive_wechat(body.url))
+
+    @app.post("/api/jobs/{job_id}/continue", status_code=202)
+    def continue_article(job_id: str):
+        get_job(job_id)
+        return public(service.continue_wechat(job_id))
+
+    @app.post("/api/jobs/{job_id}/cancel", status_code=202)
+    def cancel_article(job_id: str):
+        get_job(job_id)
+        return public(service.cancel_wechat(job_id))
+
     @app.get("/api/jobs/{job_id}")
     def job(job_id: str):
         result = public(get_job(job_id))
@@ -139,22 +158,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/jobs/{job_id}/assets/{name}")
     def asset(job_id: str, name: str):
         get_job(job_id)
-        if not re.fullmatch(r"(?:page|figure|code)-\d+\.png", name):
-            raise HTTPException(404)
-        path = service.folder(job_id) / "assets" / name
-        if not path.is_file():
-            raise HTTPException(404)
-        return FileResponse(path, media_type="image/png")
+        try:
+            path, media_type = service.asset_file(job_id, name)
+        except (FileNotFoundError, UserError) as exc:
+            raise HTTPException(404, "素材不存在或尚未获取。") from exc
+        return FileResponse(path, media_type=media_type)
 
     @app.get("/api/jobs/{job_id}/original")
     def original(job_id: str):
         entry = get_job(job_id)
-        return FileResponse(service.folder(job_id) / "source.pdf", filename=entry["filename"])
+        try:
+            path, media_type = service.original_file(job_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "原件尚未获取。") from exc
+        return FileResponse(path, media_type=media_type, filename=entry["filename"])
 
     @app.post("/api/jobs/{job_id}/publish", status_code=202)
     def publish(job_id: str, body: PublishRequest):
         get_job(job_id)
-        return public(service.submit_publish(job_id, body.url, body.title))
+        return public(service.submit_publish(job_id, body.url, body.title, body.confirmed))
 
     @app.post("/api/jobs/{job_id}/code/{index}")
     def save_code(job_id: str, index: int, body: CodeRequest):

@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     docling_artifacts_path: Path = Path(".models")
     max_bytes: int = 20 * 1024 * 1024
     max_pages: int = 100
+    wechat_max_html_bytes: int = 8 * 1024 * 1024
+    wechat_max_asset_bytes: int = 20 * 1024 * 1024
+    wechat_max_total_bytes: int = 100 * 1024 * 1024
+    wechat_timeout: float = 30.0
 
     @property
     def configured(self) -> bool:

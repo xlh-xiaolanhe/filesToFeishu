@@ -7,7 +7,16 @@ from pathlib import Path
 
 from .models import UserError
 
-ACTIVE = {"queued", "parsing", "publishing", "verifying", "archiving"}
+ACTIVE = {
+    "queued",
+    "parsing",
+    "fetching",
+    "waiting_verification",
+    "cancelling",
+    "publishing",
+    "verifying",
+    "archiving",
+}
 
 
 class Store:
@@ -29,10 +38,11 @@ class Store:
         finally:
             conn.close()
 
-    def create(self, filename: str, digest: str) -> dict:
+    def create(self, filename: str, digest: str, *, source_kind: str = "pdf") -> dict:
         job = {
             "id": uuid.uuid4().hex,
             "filename": filename,
+            "source_kind": source_kind,
             "digest": digest,
             "status": "queued",
             "progress": "等待解析",
@@ -88,6 +98,19 @@ class Store:
     def recover(self):
         for job in self.list():
             if job["status"] in ACTIVE:
+                if job.get("source_kind") == "wechat" and job["status"] in {
+                    "queued",
+                    "fetching",
+                    "waiting_verification",
+                    "cancelling",
+                }:
+                    self.update(
+                        job["id"],
+                        status="failed",
+                        progress="获取已中断",
+                        error="上次获取已中断，临时浏览器会话已失效。请重新获取文章。",
+                    )
+                    continue
                 self.update(
                     job["id"],
                     status="needs_review",
