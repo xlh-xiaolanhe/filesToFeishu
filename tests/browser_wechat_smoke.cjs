@@ -144,6 +144,7 @@ const server = http.createServer(async (request, response) => {
     assert.equal(await page.locator("#publish").isDisabled(), true);
     const editedCode = code + "\n// 已校对";
     await page.locator(".code-editor textarea").fill(editedCode);
+    await page.locator("#target").fill("https://test.feishu.cn/wiki/parent");
     await page.locator("#confirmed").check();
     assert.equal(await page.locator("#publish").isDisabled(), true);
     await page.locator(".code-save").click();
@@ -155,7 +156,10 @@ const server = http.createServer(async (request, response) => {
     await page.locator("#result a").waitFor();
     assert.equal(mutations.filter(x => x.action === "publish").length, 1);
     assert.equal(await page.locator(".code-editor textarea").isEditable(), false);
+    const reopenedId = await page.locator("#history").inputValue();
     await page.reload();
+    await page.locator(`#history option[value="${reopenedId}"]`).waitFor({state: "attached"});
+    await page.locator("#history").selectOption(reopenedId);
     await page.locator(".article-preview").waitFor();
     assert.equal(await page.locator("#confirmed").isChecked(), false);
     await fs.mkdir("output/playwright", {recursive: true});

@@ -47,7 +47,10 @@ const server = http.createServer(async (request, response) => {
     assert.equal(mutations.length, 1);
     assert.match(await page.locator("#result a").getAttribute("href"), /wiki\/sample/);
     Object.assign(receipt, {status: "uncertain", error: "请在飞书核对，未自动重发。"});
+    const reopenedId = await page.locator("#history").inputValue();
     await page.reload();
+    await page.locator(`#history option[value="${reopenedId}"]`).waitFor({state: "attached"});
+    await page.locator("#history").selectOption(reopenedId);
     await page.waitForFunction(() => document.querySelector("#notifications").textContent.includes("发送结果待核对"));
     assert.equal(await page.getByRole("button", {name: "仅重试通知"}).count(), 0);
     await page.setViewportSize({width: 390, height: 844});

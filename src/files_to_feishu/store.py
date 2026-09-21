@@ -21,6 +21,10 @@ ACTIVE = {
 RUNNING = ACTIVE - {"queued", "publish_queued"}
 
 
+class JobNotFound(KeyError):
+    """A task is absent or has been removed from the visible history."""
+
+
 class Store:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,25 +65,53 @@ class Store:
             conn.execute("INSERT INTO jobs VALUES (?, ?)", (job["id"], json.dumps(job)))
         return job
 
-    def get(self, job_id: str) -> dict:
+    def get(self, job_id: str, *, include_deleted: bool = False) -> dict:
         with self.connect() as conn:
             row = conn.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
         if row is None:
-            raise KeyError(job_id)
-        return json.loads(row[0])
+            raise JobNotFound(job_id)
+        job = json.loads(row[0])
+        if job.get("deleted_at") and not include_deleted:
+            raise JobNotFound(job_id)
+        return job
 
-    def list(self) -> list[dict]:
+    def list(self, *, include_deleted: bool = False) -> list[dict]:
         with self.connect() as conn:
             rows = conn.execute("SELECT data FROM jobs ORDER BY rowid DESC").fetchall()
-        return [json.loads(row[0]) for row in rows]
+        jobs = [json.loads(row[0]) for row in rows]
+        return jobs if include_deleted else [job for job in jobs if not job.get("deleted_at")]
+
+    def delete(self, job_id: str) -> None:
+        """Remove inactive history while retaining files/checkpoints for duplicate verification."""
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise JobNotFound(job_id)
+            job = json.loads(row[0])
+            if job.get("deleted_at"):
+                return
+            if job["status"] in ACTIVE:
+                raise UserError("任务正在排队或处理中，请等待完成或取消后再删除。")
+            if job["status"] != "succeeded" and (job.get("journal") or job.get("document_id")):
+                raise UserError("任务已有未完成核验的飞书写入，请先从原任务核对并完成发布。")
+            if any(
+                receipt["status"] in {"pending", "sending"}
+                for receipt in job.get("notifications", {}).values()
+            ):
+                raise UserError("任务通知正在等待发送或发送中，请稍后再删除。")
+            job["deleted_at"] = datetime.now(UTC).isoformat()
+            conn.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(job), job_id))
 
     def update(self, job_id: str, **changes) -> dict:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
-                raise KeyError(job_id)
+                raise JobNotFound(job_id)
             job = json.loads(row[0])
+            if job.get("deleted_at"):
+                raise JobNotFound(job_id)
             job.update(changes)
             conn.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(job), job_id))
         return job
@@ -90,8 +122,8 @@ class Store:
             conn.execute("BEGIN IMMEDIATE")
             jobs = [json.loads(row[0]) for row in conn.execute("SELECT data FROM jobs")]
             job = next((j for j in jobs if j["id"] == job_id), None)
-            if job is None:
-                raise KeyError(job_id)
+            if job is None or job.get("deleted_at"):
+                raise JobNotFound(job_id)
             if job["status"] not in {"ready", "failed", "needs_review", "succeeded"}:
                 raise UserError("当前任务正在处理中，请勿重复保存。")
             job.update(
@@ -149,8 +181,10 @@ class Store:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
-                raise KeyError(job_id)
+                raise JobNotFound(job_id)
             job = json.loads(row[0])
+            if job.get("deleted_at"):
+                raise JobNotFound(job_id)
             receipt = job.get("notifications", {}).get(event)
             if receipt is None or receipt["status"] not in expected:
                 return None

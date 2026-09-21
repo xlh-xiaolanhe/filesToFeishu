@@ -3,7 +3,10 @@ const $ = (id) => document.getElementById(id);
 let job = null, health = null, timer = null, painted = "";
 let savingCode = false, pendingAction = false, titleEdited = false, selecting = false, selectionVersion = 0;
 const codeDrafts = new Map(), reviews = new Map();
-let allJobs = [], batchFilter = localStorage.getItem("content-batch") || "", queueTimer = null;
+let allJobs = [], batchFilter = "", queueTimer = null, historyVersion = 0;
+// Remove only this app's old remembered fields, including data from earlier versions.
+try { for (const key of ["pdf-target", "pdf-job", "content-batch"]) localStorage.removeItem(key); }
+catch { /* Storage may be unavailable; form initialization still works. */ }
 const MAX_BATCH = 20;
 function invalidateReview() {
   if (job) reviews.delete(job.id);
@@ -38,6 +41,13 @@ function renderQueue() {
     view.disabled = pendingAction || savingCode || selecting;
     view.addEventListener("click", () => select(item.id).catch(error => message("error", error.message)));
     row.append(info, view);
+    const remove = element("button", "删除", "secondary delete-job"); remove.type = "button";
+    const busy = active.has(item.status) || (item.notifications || []).some(n => ["pending", "sending"].includes(n.status));
+    const unresolved = item.status !== "succeeded" && (item.document_id || item.content_locked);
+    remove.disabled = busy || unresolved || pendingAction || savingCode || selecting;
+    remove.title = busy ? "任务处理或通知发送完成后可删除" : (unresolved ? "已有未完成核验的飞书写入，请先核对原任务" : "从本地历史列表删除");
+    remove.addEventListener("click", () => deleteJob(item));
+    row.append(remove);
     if (item.status === "succeeded" && externalUrl(item.url)) {
       const link = element("a", "飞书文档 ↗"); link.href = externalUrl(item.url); link.target = "_blank"; link.rel = "noopener noreferrer"; row.append(link);
     }
@@ -53,8 +63,35 @@ function message(id, text) { $(id).textContent = text; $(id).hidden = !text; }
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   const data = await response.json();
-  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "请求无效，请检查输入。");
+  if (!response.ok) {
+    const error = new Error(typeof data.detail === "string" ? data.detail : "请求无效，请检查输入。");
+    error.status = response.status; throw error;
+  }
   return data;
+}
+function clearSelection() {
+  ++selectionVersion; clearTimeout(timer);
+  job = null; painted = ""; titleEdited = false; selecting = false;
+  $("title").value = ""; $("target").value = ""; $("confirmed").checked = false;
+  $("preview").replaceChildren(); $("empty").hidden = false;
+  $("original").hidden = true; $("original").removeAttribute("href");
+  $("history").value = ""; $("status").textContent = "等待选择文件或文章";
+  for (const id of ["error", "notices", "result", "notifications", "target-name"]) message(id, "");
+  enable();
+}
+async function deleteJob(item) {
+  if (pendingAction || savingCode || selecting) return;
+  if (!window.confirm(`从历史列表删除「${item.requested_title || item.filename || "此任务"}」？\n已生成的飞书文档不受影响。本地素材和发布核验记录仍保留，用于避免重复导入。`)) return;
+  pendingAction = true; ++historyVersion; enable();
+  try {
+    await api(`/api/jobs/${item.id}`, {method: "DELETE"});
+    ++historyVersion; reviews.delete(item.id);
+    for (const key of codeDrafts.keys()) if (key.startsWith(`${item.id}:`)) codeDrafts.delete(key);
+    allJobs = allJobs.filter(entry => entry.id !== item.id);
+    if (job?.id === item.id) clearSelection();
+    await history();
+  } catch (error) { message("error", error.message); }
+  finally { pendingAction = false; enable(); }
 }
 function post(path, data) { return api(path, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)}); }
 function notificationLabel(receipt) {
@@ -103,7 +140,7 @@ function sourceInputs() {
 function enable() {
   const unreviewed = job?.preview?.elements.some(e => e.kind === "code" && !e.code_reviewed);
   const busy = savingCode || pendingAction || selecting;
-  $("publish").disabled = !job?.parsed || !["ready", "failed", "needs_review", "succeeded"].includes(job?.status) || !health?.feishu_configured || !$("confirmed").checked || unreviewed || !!document.querySelector('.code-editor[data-dirty="true"]') || busy;
+  $("publish").disabled = !job?.parsed || !["ready", "failed", "needs_review", "succeeded"].includes(job?.status) || !health?.feishu_configured || !$("target").value.trim() || !$("confirmed").checked || unreviewed || !!document.querySelector('.code-editor[data-dirty="true"]') || busy;
   $("history").disabled = busy || job?.status === "cancelling";
   $("confirmed").disabled = busy || !job?.parsed || active.has(job?.status) || job?.status === "cancelled";
   const codeLocked = busy || job?.status !== "ready" || job?.content_locked;
@@ -339,9 +376,9 @@ function preview() {
 async function refresh() {
   clearTimeout(timer);
   if (!job) return;
+  const selectedId = job.id;
   try {
     const hadPreview = !!job.parsed;
-    const selectedId = job.id;
     const updated = await api(`/api/jobs/${selectedId}`);
     if (job?.id !== selectedId) return;
     job = updated;
@@ -364,7 +401,11 @@ async function refresh() {
     preview(); enable();
     if (active.has(job.status) || (job.notifications || []).some(n => ["pending", "sending"].includes(n.status))) timer = setTimeout(refresh, job.status === "waiting_verification" ? 3000 : 1200);
     else await history();
-  } catch (error) { message("error", error.message); timer = setTimeout(refresh, 4000); }
+  } catch (error) {
+    if (job?.id !== selectedId) return;
+    if (error.status === 404) { clearSelection(); await history(); return; }
+    message("error", error.message); timer = setTimeout(refresh, 4000);
+  }
 }
 async function select(id) {
   const version = ++selectionVersion;
@@ -373,10 +414,9 @@ async function select(id) {
   try {
     const selected = await api(`/api/jobs/${id}`);
     if (version !== selectionVersion) return;
-    job = selected; localStorage.setItem("pdf-job", id);
+    job = selected;
     $("source-kind").value = sourceKind(); sourceInputs();
     $("title").value = reviews.get(job.id)?.title || job.requested_title || job.preview?.metadata?.title || (sourceKind() === "pdf" ? (job.filename || "").replace(/\.pdf$/i, "") : "");
-    if (sourceKind() === "wechat" && !$("article-url").value) $("article-url").value = job.source_url || job.preview?.metadata?.url || "";
     if (job.target) { $("target").value = `https://${job.target.host}/wiki/${job.target.node_token}`; message("target-name", `保存为「${job.target.title}」的子页面`); }
     const review = reviews.get(job.id);
     $("confirmed").checked = !!review && review.review_token === (job.review_token || "") && review.url === $("target").value;
@@ -386,7 +426,14 @@ async function select(id) {
 }
 
 async function history() {
-  const items = await api("/api/jobs"); allJobs = items;
+  const version = ++historyVersion;
+  const items = await api("/api/jobs");
+  if (version !== historyVersion) return;
+  allJobs = items;
+  const ids = new Set(items.map(item => item.id));
+  for (const id of reviews.keys()) if (!ids.has(id)) reviews.delete(id);
+  for (const key of codeDrafts.keys()) if (!ids.has(key.split(":")[0])) codeDrafts.delete(key);
+  if (job && !ids.has(job.id)) clearSelection();
   const batches = new Map();
   for (const item of items) if (item.batch_id && !batches.has(item.batch_id)) batches.set(item.batch_id, item.created_at);
   $("batch-filter").replaceChildren(element("option", "全部任务")); $("batch-filter").firstChild.value = "";
@@ -424,7 +471,7 @@ $("upload-form").addEventListener("submit", async event => {
         created.push(entry);
       } catch (error) { errors.push(`${wechat ? input : input.name}：${error.message}`); }
     }
-    batchFilter = batchId; localStorage.setItem("content-batch", batchId);
+    batchFilter = batchId;
     await history();
     if (created.length) await select(created[0].id);
     const report = `已提交 ${created.length}/${inputs.length} 个任务。` + (errors.length ? "\n未成功提交，请处理后单独重试：\n" + errors.join("\n") : "可在队列中逐篇核对。");
@@ -454,11 +501,11 @@ $("history").addEventListener("change", () => { if ($("history").value) select($
 $("publish").addEventListener("click", async () => {
   if (!job || !$("confirmed").checked || pendingAction) return;
   pendingAction = true; enable();
-  try { await post(`/api/jobs/${job.id}/publish`, {url: $("target").value, title: $("title").value, confirmed: $("confirmed").checked, review_token: job.review_token || ""}); localStorage.setItem("pdf-target", $("target").value); await refresh(); }
+  try { await post(`/api/jobs/${job.id}/publish`, {url: $("target").value, title: $("title").value, confirmed: $("confirmed").checked, review_token: job.review_token || ""}); await refresh(); }
   catch (error) { message("error", error.message); }
   finally { pendingAction = false; enable(); }
 });
-$("batch-filter").addEventListener("change", () => { batchFilter = $("batch-filter").value; localStorage.setItem("content-batch", batchFilter); renderQueue(); });
+$("batch-filter").addEventListener("change", () => { batchFilter = $("batch-filter").value; renderQueue(); });
 $("publish-batch").addEventListener("click", async () => {
   if (pendingAction || savingCode) return;
   const items = reviewedBatch(), target = $("target").value;
@@ -474,7 +521,6 @@ $("publish-batch").addEventListener("click", async () => {
         accepted++; reviews.delete(item.id);
       } catch (error) { errors.push(`${review.title || item.filename}：${error.message}`); }
     }
-    localStorage.setItem("pdf-target", target);
     message("batch-message", `已将 ${accepted} 个任务加入发布队列，完成状态请查看上方列表。` + (errors.length ? "\n" + errors.join("\n") : ""));
     await history(); if (job) await refresh();
   } finally { pendingAction = false; enable(); }
@@ -487,8 +533,11 @@ async function pollQueue() {
 }
 (async () => {
   try {
-    health = await api("/api/health"); $("target").value = localStorage.getItem("pdf-target") || health.default_target;
-    sourceInputs(); await history(); const last = localStorage.getItem("pdf-job"); if (last) await select(last);
+    for (const id of ["title", "target", "article-url", "file"]) $(id).value = "";
+    $("confirmed").checked = false; $("source-kind").value = "pdf";
+    health = await api("/api/health");
+    sourceInputs(); await history();
   } catch (error) { message("error", error.message); }
   enable(); pollQueue();
 })();
+window.addEventListener("pageshow", event => { if (event.persisted) window.location.reload(); });

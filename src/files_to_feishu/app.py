@@ -17,7 +17,7 @@ from .launcher import server_identity
 from .models import CodeLanguage, UserError
 from .notifications import Notification
 from .service import JobService
-from .store import Store
+from .store import JobNotFound, Store
 
 HERE = Path(__file__).parent
 
@@ -107,6 +107,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def user_error(request: Request, exc: UserError):
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
+    @app.exception_handler(JobNotFound)
+    async def job_not_found(request: Request, exc: JobNotFound) -> JSONResponse:
+        return JSONResponse({"detail": "任务不存在或已删除。"}, status_code=404)
+
     def get_job(job_id: str):
         if not re.fullmatch("[a-f0-9]{32}", job_id):
             raise HTTPException(404, "任务不存在。")
@@ -151,6 +155,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/jobs")
     def jobs():
         return [public(j) for j in store.list()]
+
+    @app.delete("/api/jobs/{job_id}")
+    def delete_job(job_id: str) -> dict[str, bool]:
+        if not re.fullmatch("[a-f0-9]{32}", job_id):
+            raise HTTPException(404, "任务不存在。")
+        service.delete(job_id)
+        return {"deleted": True}
 
     @app.post("/api/jobs/wechat", status_code=202)
     def article(body: ArticleRequest):

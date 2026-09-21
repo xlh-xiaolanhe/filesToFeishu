@@ -9,7 +9,7 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <header><div class="brand">纸页 <span>→</span> 知识库</div><span class="badge">本地转换 · v0.5.0</span></header>
+  <header><div class="brand">纸页 <span>→</span> 知识库</div><span class="badge">本地转换 · v0.5.1</span></header>
   <main>
     <section class="intro"><p class="eyebrow">FILES TO FEISHU</p><h1>让文档，成为可编辑的知识。</h1><p>导入 PDF 或微信公众号文章，核对完整内容后保存到指定飞书知识库。文字、代码与图片按原文顺序保留，原件随文档附上。</p></section>
     <div id="setup" class="notice" role="status" hidden></div>
@@ -26,18 +26,18 @@
         <h2><span class="step">1</span> 选择来源与位置</h2>
         <label for="source-kind">内容来源</label>
         <select id="source-kind"><option value="pdf">PDF 文件</option><option value="wechat">微信公众号文章</option></select>
-        <form id="upload-form">
+        <form id="upload-form" autocomplete="off">
           <div id="pdf-input"><label class="drop" for="file"><strong>选择一个或多个文字型 PDF</strong><span>每个最大 20 MB · 100 页 · 每批最多 20 个</span><input id="file" type="file" accept="application/pdf,.pdf" multiple required></label></div>
           <div id="wechat-input" hidden>
             <label for="article-url">微信公众号文章链接（每行一个）</label>
-            <textarea id="article-url" rows="5" maxlength="42000" placeholder="https://mp.weixin.qq.com/s/…&#10;https://mp.weixin.qq.com/s/…" disabled></textarea>
+            <textarea id="article-url" autocomplete="off" rows="5" maxlength="42000" placeholder="https://mp.weixin.qq.com/s/…&#10;https://mp.weixin.qq.com/s/…" disabled></textarea>
             <p class="muted small">每批最多 20 篇，重复链接只提交一次；各篇生成独立文档。</p>
             <p class="muted small">获取正文与图片后先预览；需要验证时可完成验证后继续。</p>
           </div>
           <button id="convert" type="submit">开始本地转换</button>
         </form>
-        <label for="title">文档标题</label><input id="title" maxlength="200" placeholder="默认使用文件名或文章标题">
-        <label for="target">知识库父页面链接</label><input id="target" type="url" placeholder="https://公司.feishu.cn/wiki/…">
+        <label for="title">文档标题</label><input id="title" autocomplete="off" maxlength="200" placeholder="默认使用文件名或文章标题">
+        <label for="target">知识库父页面链接</label><input id="target" autocomplete="off" type="url" placeholder="https://公司.feishu.cn/wiki/…">
         <button id="resolve" class="secondary" type="button">检查保存位置</button>
         <p id="target-name" class="muted"></p>
         <div class="divider"></div>

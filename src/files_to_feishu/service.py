@@ -47,9 +47,13 @@ class JobService:
         self.lock = threading.Lock()
         self.closing = threading.Event()
 
-    def folder(self, job_id: str) -> Path:
-        self.store.get(job_id)
+    def folder(self, job_id: str, *, include_deleted: bool = False) -> Path:
+        self.store.get(job_id, include_deleted=include_deleted)
         return self.settings.data_dir / "jobs" / job_id
+
+    def delete(self, job_id: str) -> None:
+        with self.lock:
+            self.store.delete(job_id)
 
     def _check_capacity(self) -> None:
         if self.closing.is_set():
@@ -376,8 +380,8 @@ class JobService:
         finally:
             self._advance()
 
-    def parsed(self, job_id: str) -> ParsedDocument:
-        path = self.folder(job_id) / "parsed.json"
+    def parsed(self, job_id: str, *, include_deleted: bool = False) -> ParsedDocument:
+        path = self.folder(job_id, include_deleted=include_deleted) / "parsed.json"
         if not path.is_file():
             raise UserError("尚无转换预览，请完成来源获取；中断任务请重新获取或上传。")
         return ParsedDocument.model_validate_json(path.read_text(encoding="utf-8"))
@@ -420,7 +424,7 @@ class JobService:
                 title = job["title"]
             else:
                 original_title = title
-                for previous in self.store.list():
+                for previous in self.store.list(include_deleted=True):
                     if (
                         previous.get("requested_title") == title
                         and previous["digest"] != job["digest"]
@@ -479,7 +483,7 @@ class JobService:
                 ),
             )
             # A failed recheck must stop: creating a replacement could duplicate a document.
-            for previous in self.store.list():
+            for previous in self.store.list(include_deleted=True):
                 if (
                     previous.get("wiki_token")
                     and previous.get("source_kind", "pdf") == job.get("source_kind", "pdf")
@@ -496,7 +500,8 @@ class JobService:
                             not job["journal"]
                             and (
                                 parsed.source_kind == "wechat"
-                                or self.parsed(previous["id"]).elements == parsed.elements
+                                or self.parsed(previous["id"], include_deleted=True).elements
+                                == parsed.elements
                             )
                         )
                     )

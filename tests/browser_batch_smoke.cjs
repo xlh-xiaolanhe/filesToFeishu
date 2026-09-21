@@ -27,6 +27,7 @@ const fs = require("node:fs/promises");
     };
     const oldPdfId = await page.locator(".queue-row").filter({hasText: "first.pdf"}).getAttribute("data-job-id");
     await open("first.pdf");
+    await page.locator("#target").fill("https://test.feishu.cn/wiki/parent");
     await page.locator("#title").fill("第一篇独立标题");
     await page.locator("#confirmed").check();
     await open("second.pdf");
@@ -36,8 +37,15 @@ const fs = require("node:fs/promises");
     await open("first.pdf");
     assert.equal(await page.locator("#title").inputValue(), "第一篇独立标题");
     assert.equal(await page.locator("#confirmed").isChecked(), true);
-    // Refresh keeps the durable batch, but cannot carry stale confirmation into a publish.
+    // Refresh keeps history, but clears inputs, selected task/batch and review confirmation.
+    const pdfBatch = await page.locator("#batch-filter").inputValue();
     await page.reload();
+    await page.locator(`#batch-filter option[value="${pdfBatch}"]`).waitFor({state: "attached"});
+    assert.equal(await page.locator("#title").inputValue(), "");
+    assert.equal(await page.locator("#target").inputValue(), "");
+    await page.locator("#batch-filter").selectOption(pdfBatch);
+    await open("first.pdf");
+    await page.locator("#target").fill("https://test.feishu.cn/wiki/parent");
     await page.locator(".comparison").first().waitFor();
     assert.equal(await page.locator(".queue-row").count(), 3);
     assert.equal(await page.locator("#confirmed").isChecked(), false);
@@ -58,7 +66,7 @@ const fs = require("node:fs/promises");
     assert.equal(await page.locator(".queue-row").count(), 2);
     const rows = await page.locator(".queue-row").evaluateAll(nodes => nodes.map(node => node.dataset.jobId));
     for (const id of rows) {
-      await page.locator(`.queue-row[data-job-id="${id}"] button`).click();
+      await page.locator(`.queue-row[data-job-id="${id}"]`).getByRole("button", {name: "打开", exact: true}).click();
       await page.locator(".article-preview").waitFor();
       await page.locator("#confirmed").check();
     }
@@ -72,7 +80,7 @@ const fs = require("node:fs/promises");
     });
     await page.locator("#history").selectOption(oldPdfId);
     await page.waitForFunction(() => document.querySelector("#target").value.endsWith("/other-parent"));
-    await page.locator(`.queue-row[data-job-id="${rows[1]}"] button`).click();
+    await page.locator(`.queue-row[data-job-id="${rows[1]}"]`).getByRole("button", {name: "打开", exact: true}).click();
     await page.locator(".article-preview").waitFor();
     await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
     assert.equal(await page.locator("#confirmed").isChecked(), false);
@@ -80,7 +88,7 @@ const fs = require("node:fs/promises");
     await page.unroute(oldPath);
     await page.locator("#target").fill("https://test.feishu.cn/wiki/parent");
     for (const id of rows) {
-      await page.locator(`.queue-row[data-job-id="${id}"] button`).click();
+      await page.locator(`.queue-row[data-job-id="${id}"]`).getByRole("button", {name: "打开", exact: true}).click();
       await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
       await page.locator("#confirmed").check();
     }
@@ -93,7 +101,7 @@ const fs = require("node:fs/promises");
     await page.locator("#target").fill("https://test.feishu.cn/wiki/parent");
     assert.match(await page.locator("#publish-batch").textContent(), /（0）/);
     for (const id of rows) {
-      await page.locator(`.queue-row[data-job-id="${id}"] button`).click();
+      await page.locator(`.queue-row[data-job-id="${id}"]`).getByRole("button", {name: "打开", exact: true}).click();
       await page.locator(".article-preview").waitFor();
       await page.locator("#confirmed").check();
     }
@@ -103,7 +111,11 @@ const fs = require("node:fs/promises");
     await page.locator("#publish-batch").click();
     await page.waitForFunction(() => document.querySelector("#queue-summary").textContent.includes("已保存 2"));
     assert.equal(await page.locator(".queue-row a").count(), 2);
+    const articleBatch = await page.locator("#batch-filter").inputValue();
     await page.reload();
+    await page.locator(`#batch-filter option[value="${articleBatch}"]`).waitFor({state: "attached"});
+    await page.locator("#batch-filter").selectOption(articleBatch);
+    await page.locator("#history").selectOption(rows[0]);
     await page.locator(".article-preview").waitFor();
     assert.equal(await page.locator("#publish-batch").isDisabled(), true);
     await page.setViewportSize({width: 390, height: 844});
