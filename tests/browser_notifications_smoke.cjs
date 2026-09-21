@@ -8,6 +8,7 @@ const root = path.resolve(__dirname, "../src/files_to_feishu");
 const receipt = {event: "succeeded", status: "failed", error: "缺少消息发送权限"};
 const job = {
   id: "a".repeat(32), filename: "原创通知样例.zip", source_kind: "wechat", status: "succeeded",
+  content_revision: 1, review_token: "1".repeat(64),
   progress: "正文、附件与位置已核验", parsed: true, content_locked: true,
   url: "https://example.feishu.cn/wiki/sample", notifications: [receipt],
   preview: {source_kind: "wechat", metadata: {title: "原创通知样例"}, elements: [{kind: "text", text: "原创内容"}], notices: [], assets: []},

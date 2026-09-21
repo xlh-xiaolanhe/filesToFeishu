@@ -39,7 +39,12 @@ class MemoryFeishu:
         if method == "POST" and path == "/docx/v1/documents":
             self.created += 1
             doc = f"doc{self.created}"
-            self.data[doc] = {"block_id": doc, "children": [], "block_type": 1}
+            self.data[doc] = {
+                "block_id": doc,
+                "children": [],
+                "block_type": 1,
+                "title": body["title"],
+            }
             if self.lost_response:
                 raise UncertainWrite("响应丢失")
             return {"document": {"document_id": doc}}
@@ -118,6 +123,9 @@ class MemoryFeishu:
 
     def block(self, doc, block_id):
         return copy.deepcopy(self.data[block_id])
+
+    def document_title(self, doc):
+        return self.data[doc]["title"]
 
     def node(self, token, obj_type="wiki"):
         if obj_type == "docx":
@@ -810,16 +818,22 @@ def test_image_digest_download_is_cached_only_within_one_verification(wechat_med
     assert downloads == [image["token"], image["token"]]
 
 
-def test_pdf_and_legacy_expected_media_do_not_require_image_downloads(publishing):
+def test_new_pdf_plans_check_images_but_legacy_expected_readback_remains_compatible(publishing):
     client, journal, publisher, args = publishing
     original = client.download_digest
 
+    downloaded = []
+
     def download(token):
-        assert client.files[token] == args[1].read_bytes()
+        downloaded.append(client.files[token])
         return original(token)
 
     client.download_digest = download
     publisher().publish(*args)
+    assert downloaded.count(b"fixture-image") == 2
+    assert downloaded.count(args[1].read_bytes()) == 2
     verified = journal["verified"]["result"]
     assert all("asset_digest" not in item for item in verified["expected"])
+    downloaded.clear()
     publisher().verify("doc1", **verified)
+    assert downloaded == []

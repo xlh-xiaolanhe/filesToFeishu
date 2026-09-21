@@ -36,6 +36,7 @@ const article = {
 };
 const pdfJob = {
   id: "pdf-old", filename: "旧任务.pdf", source_kind: "pdf", status: "ready", progress: "请核对预览后保存", parsed: true,
+  content_revision: 1, review_token: "1".repeat(64),
   preview: {pages: 1, page_images: ["page-1.png"], notices: [{page: 1, reason: "PDF 原有提示"}], elements: [
     {kind: "heading", page: 1, level: 2, text: "旧 PDF 标题"},
     {kind: "ordered", page: 1, text: "原列表一"}, {kind: "ordered", page: 1, text: "原列表二"},
@@ -79,11 +80,22 @@ const server = http.createServer(async (request, response) => {
         return fulfill(job);
       }
       mutations.push({action, body, id});
-      if (action === "continue") Object.assign(job, {status: "ready", progress: "请核对完整正文", parsed: true, preview: structuredClone(article)});
+      if (action === "continue") Object.assign(job, {status: "ready", progress: "请核对完整正文", parsed: true, preview: structuredClone(article), content_revision: 1, review_token: "1".repeat(64)});
       else if (action === "cancel") Object.assign(job, {status: "cancelling", progress: "正在关闭临时验证会话"});
-      else if (action === "code") Object.assign(job.preview.elements[Number(pathname.split("/")[5])], {text: body.text, language: body.language, code_reviewed: true});
+      else if (action === "code") {
+        assert.equal(body.expected_revision, job.content_revision);
+        Object.assign(job.preview.elements[Number(pathname.split("/")[5])], {text: body.text, language: body.language, code_reviewed: true});
+        job.content_revision++;
+        job.review_token = String(job.content_revision).repeat(64);
+      } else if (action === "review") {
+        assert.equal(body.expected_revision, job.content_revision);
+        assert.equal(body.review_token, job.review_token);
+        return fulfill({confirmation_token: "a".repeat(64), content_revision: job.content_revision});
+      }
       else if (action === "publish") {
         assert.equal(body.confirmed, true);
+        assert.equal(body.review_token, job.review_token);
+        assert.equal(body.confirmation_token, "a".repeat(64));
         Object.assign(job, {status: "succeeded", progress: "已保存", url: "https://test.feishu.cn/wiki/article", document_id: "doc", content_locked: true});
       } else throw new Error(`Unexpected API ${pathname}`);
       return fulfill(job);
@@ -146,12 +158,14 @@ const server = http.createServer(async (request, response) => {
     await page.locator(".code-editor textarea").fill(editedCode);
     await page.locator("#target").fill("https://test.feishu.cn/wiki/parent");
     await page.locator("#confirmed").check();
+    await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
     assert.equal(await page.locator("#publish").isDisabled(), true);
     await page.locator(".code-save").click();
     await page.locator(".code-save").waitFor({state: "hidden"});
     assert.equal(await page.locator(".code-editor textarea").inputValue(), editedCode);
     assert.equal(await page.locator("#confirmed").isChecked(), false);
     await page.locator("#confirmed").check();
+    await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
     await page.locator("#publish").click();
     await page.locator("#result a").waitFor();
     assert.equal(mutations.filter(x => x.action === "publish").length, 1);

@@ -12,6 +12,7 @@ from files_to_feishu.app import create_app
 from files_to_feishu.config import Settings
 from files_to_feishu.models import Asset, Element, Notice, ParsedDocument, SourceMetadata, TextRun
 from files_to_feishu.service import article_digest
+from tests.helpers import reviewed_payload
 from tests.integrations.feishu.test_publisher import MemoryFeishu
 from tests.test_workflow import wait
 
@@ -118,7 +119,12 @@ def test_article_confirm_publish_archive_dedupe_and_changed_content(article_app)
         == 400
     )
     assert service.client.created == 0
-    assert client.post(f"/api/jobs/{job['id']}/publish", json=PAYLOAD).status_code == 202
+    assert (
+        client.post(
+            f"/api/jobs/{job['id']}/publish", json=reviewed_payload(client, job["id"], PAYLOAD)
+        ).status_code
+        == 202
+    )
     saved = wait(client, job["id"], {"succeeded", "failed"})
     assert saved["status"] == "succeeded", saved
     journal = service.store.get(job["id"])["journal"]
@@ -126,14 +132,19 @@ def test_article_confirm_publish_archive_dedupe_and_changed_content(article_app)
     assert "original-pdf:bind" not in journal
     duplicate = client.post("/api/jobs/wechat", json={"url": URL}).json()
     wait(client, duplicate["id"], {"ready"})
-    client.post(f"/api/jobs/{duplicate['id']}/publish", json=PAYLOAD)
+    client.post(
+        f"/api/jobs/{duplicate['id']}/publish",
+        json=reviewed_payload(client, duplicate["id"], PAYLOAD),
+    )
     reused = wait(client, duplicate["id"], {"succeeded", "failed"})
     assert reused["status"] == "succeeded", reused
     assert service.client.created == 1
     service.wechat.text = "Article updated"
     changed = client.post("/api/jobs/wechat", json={"url": URL}).json()
     wait(client, changed["id"], {"ready"})
-    client.post(f"/api/jobs/{changed['id']}/publish", json=PAYLOAD)
+    client.post(
+        f"/api/jobs/{changed['id']}/publish", json=reviewed_payload(client, changed["id"], PAYLOAD)
+    )
     result = wait(client, changed["id"], {"succeeded", "failed"})
     assert result["status"] == "succeeded", result
     assert service.client.created == 2

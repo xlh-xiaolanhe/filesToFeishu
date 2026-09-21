@@ -1,57 +1,30 @@
 import copy
-import hashlib
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from ...models import Element, ParsedDocument, Target, UncertainWrite, UserError
+from pydantic import ValidationError
+
+from ...models import ParsedDocument, Target, UncertainWrite, UserError
 from .blocks import (
     block_text,
-    element_blocks,
     empty_text_block,
     plain_text_block,
-    text_blocks,
     text_matches,
     text_signature,
 )
 from .client import FeishuClient
-
-
-def validate_upload_files(parsed: ParsedDocument, source: Path, assets: Path) -> None:
-    """Reject unrecoverable local input failures before creating a remote document."""
-    files = [(source, "原附件", "")]
-    manifest = {asset.name: asset.digest for asset in parsed.assets}
-    asset_root = assets.resolve()
-    for element in parsed.elements:
-        if element.kind != "image":
-            continue
-        path = (assets / element.asset).resolve()
-        if not element.asset or path.parent != asset_root:
-            raise UserError("转换结果的图片素材路径无效，请重新获取或上传来源。")
-        digest = ""
-        if parsed.source_kind == "wechat":
-            digest = manifest.get(element.asset, "")
-            if not digest:
-                raise UserError("公众号图片缺少素材摘要，无法核验，请重新获取文章。")
-        files.append((path, "图片素材", digest))
-    checked: dict[Path, str] = {}
-    for path, label, digest in files:
-        try:
-            if not path.is_file():
-                raise UserError(f"{label}缺失，请重新获取或上传来源后再发布。")
-            size = path.stat().st_size
-        except OSError as exc:
-            raise UserError(f"无法读取{label}，请检查本地任务文件后重试。") from exc
-        if not size or size > 20 * 1024 * 1024:
-            raise UserError(f"{label}为空或超过飞书单次上传 20 MB 限制，已停止本次发布。")
-        if digest:
-            try:
-                if path not in checked:
-                    checked[path] = hashlib.sha256(path.read_bytes()).hexdigest()
-            except OSError as exc:
-                raise UserError("无法读取图片素材，请检查本地任务文件后重试。") from exc
-            if checked[path] != digest:
-                raise UserError("本地图片素材与转换时的摘要不一致，请重新获取文章后再发布。")
+from .plan import (
+    JOURNAL_VERSION,
+    PLAN_VERSION,
+    EffectRecord,
+    PublicationPlan,
+    build_plan,
+    canonical_digest,
+    file_digest,
+)
+from .verification import PlanVerifier
 
 
 class Publisher:
@@ -62,37 +35,92 @@ class Publisher:
         self.journal = copy.deepcopy(journal)
         self.save = save
         self.progress = progress
+        self.plan: PublicationPlan | None = None
+        for entry in self.journal.values():
+            try:
+                EffectRecord.model_validate(entry)
+            except ValidationError as exc:
+                raise UserError("发布日志格式或版本不受支持，已保留现场并停止写入。") from exc
+        if (
+            self.journal.get("plan", {}).get("result", {}).get("version", PLAN_VERSION)
+            != PLAN_VERSION
+        ):
+            raise UserError("发布计划版本不受支持，已保留现场并停止写入。")
+
+    def prepare_plan(
+        self,
+        parsed: ParsedDocument,
+        source: Path,
+        assets: Path,
+        title: str,
+        target: Target,
+        digest: str,
+        filename: str,
+        *,
+        app_id: str = "",
+    ) -> PublicationPlan:
+        settings = getattr(self.client, "settings", None)
+        if settings is not None and app_id and app_id != settings.feishu_app_id:
+            raise UserError("当前应用与原发布快照的应用身份不一致，已停止发布。")
+        if not app_id:
+            app_id = settings.feishu_app_id if settings is not None else ""
+        plan = build_plan(parsed, source, assets, title, target, digest, filename, app_id)
+        prior = self.journal.get("plan", {}).get("result")
+        if prior is not None and prior.get("fingerprint") != plan.fingerprint:
+            raise UserError("发布计划与已锁定快照不一致，已停止续接；请保留任务并核对内容。")
+        self.plan = plan
+        if prior is None:
+            self.journal["plan"] = {
+                "schema_version": JOURNAL_VERSION,
+                "state": "done",
+                "result": {"fingerprint": plan.fingerprint, **plan.context},
+            }
+            self.save(self.journal)
+        return plan
 
     def effect(
         self,
         key: str,
         operation: Callable[[], dict],
         reconcile: Callable[[], dict | None] | None = None,
+        *,
+        context: dict | None = None,
+        validate: Callable[[dict], bool] | None = None,
     ) -> dict:
         entry = self.journal.get(key)
         if entry:
+            if context and entry.get("input") and entry["input"] != context:
+                raise UserError("写入步骤与已保存的输入依据不一致，已停止恢复。")
             if entry["state"] == "done":
                 return entry["result"]
             if reconcile is not None:
                 result = reconcile()
                 if result is not None:
-                    self.journal[key] = {"state": "done", "result": result}
+                    self.journal[key] = {**entry, "state": "done", "result": result}
                     self.save(self.journal)
                     return result
             raise UncertainWrite(
                 f"步骤 {key} 的上次写入结果不确定。已停止，避免重复写入；请检查远端文档。"
             )
-        self.journal[key] = {"state": "pending"}
+        entry = {
+            "schema_version": JOURNAL_VERSION,
+            "state": "pending",
+            "input": context or {},
+            "started_at": time.time(),
+        }
+        self.journal[key] = entry
         self.save(self.journal)
         try:
             result = operation()
+            if validate is not None and not validate(result):
+                raise UncertainWrite("飞书返回的写入标识或结构不完整，请核对状态后恢复。")
         except UncertainWrite:
             raise
         except UserError:
             del self.journal[key]
             self.save(self.journal)
             raise
-        self.journal[key] = {"state": "done", "result": result}
+        self.journal[key] = {**entry, "state": "done", "result": result}
         self.save(self.journal)
         return result
 
@@ -144,10 +172,16 @@ class Publisher:
             # Old journals did not record a parent snapshot. They remain conservative.
             return None
         child_ids = self.client.block(doc, parent).get("children", [])
-        before = baseline["children"]
-        if child_ids[: len(before)] != before or len(child_ids) != len(before) + len(wanted):
+        if "children" in baseline:
+            # Version zero used complete prefixes. Preserve readback compatibility.
+            count = len(baseline["children"])
+            matches = child_ids[:count] == baseline["children"]
+        else:
+            count = baseline["count"]
+            matches = canonical_digest(child_ids[:count]) == baseline["sha256"]
+        if not matches or len(child_ids) != count + len(wanted):
             raise UncertainWrite("追加结果尚未确认或远端内容已改变，已停止恢复以避免重复写入。")
-        actual = [self.client.block(doc, child) for child in child_ids[len(before) :]]
+        actual = [self.client.block(doc, child) for child in child_ids[count:]]
         for created, expected in zip(actual, wanted, strict=True):
             if created.get("parent_id") != parent:
                 raise UncertainWrite("追加块的归属已改变，请核对远端文档。")
@@ -178,9 +212,11 @@ class Publisher:
         if not cell and key not in self.journal:
             # Persist the exact prior child order before the append, so a lost response
             # can be confirmed by readback without issuing the append again.
+            before = self.client.block(doc, parent).get("children", [])
             self.journal[key + ":before"] = {
+                "schema_version": JOURNAL_VERSION,
                 "state": "done",
-                "result": {"children": self.client.block(doc, parent).get("children", [])},
+                "result": {"count": len(before), "sha256": canonical_digest(before)},
             }
             self.save(self.journal)
         result = self.effect(
@@ -194,10 +230,17 @@ class Publisher:
             (lambda: self.reconcile_cell(key, doc, parent, blocks))
             if cell
             else (lambda: self.reconcile_append(key, doc, parent, blocks)),
+            validate=lambda result: (
+                len(result.get("children", [])) == len(blocks)
+                and all(child.get("block_id") for child in result.get("children", []))
+            ),
         )
         children = result.get("children", [])
         if len(children) != len(blocks):
             raise UncertainWrite("飞书返回的创建块数量不符，请核对文档。")
+        for child, wanted in zip(children, blocks, strict=True):
+            if text_signature(wanted) is not None and not text_matches(child, wanted):
+                raise UserError("已保存的写入记录与当前内容不一致，已在后续写入前停止恢复。")
         return children
 
     def media(
@@ -220,8 +263,23 @@ class Publisher:
         if node.get("block_type") != block_type:
             raise UncertainWrite("未找到实际文件块，已停止上传。")
         block_id = node["block_id"]
+        source_digest = file_digest(source, "待上传素材")
+        if self.plan and source_digest != self.plan.uploads[key]:
+            raise UserError("素材在发布计划生成后发生变化，已停止上传。")
+        context = {
+            "plan": self.plan.fingerprint if self.plan else "",
+            "document_id": doc,
+            "parent_id": parent,
+            "root_id": created["block_id"],
+            "block_id": block_id,
+            "kind": kind,
+            "sha256": source_digest,
+        }
         uploaded = self.effect(
-            key + ":upload", lambda: self.client.upload(block_id, source, kind, filename)
+            key + ":upload",
+            lambda: self.client.upload(block_id, source, kind, filename),
+            context=context,
+            validate=lambda result: bool(result.get("file_token")),
         )
         token = uploaded.get("file_token")
         if not token:
@@ -249,6 +307,132 @@ class Publisher:
             "parent": parent,
         }
 
+    def recover_candidate(self, key: str, candidate: str, *, app_id: str) -> None:
+        """Associate one explicitly supplied object after readback, never publish it.
+
+        The service must first prepare the frozen plan and serialize this operation
+        with publishing. The subsequent normal publish still verifies every block,
+        attachment and destination; this method does not mark the job successful.
+        """
+        plan = self.plan
+        if plan is None or not app_id or plan.context["app_id"] != app_id:
+            raise UserError("请先核对并加载原任务的发布快照及应用身份。")
+        entry = self.journal.get(key, {})
+        if entry.get("state") != "pending":
+            raise UserError("只能关联写入结果不确定的步骤。")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", candidate):
+            raise UserError("请输入候选文档 ID 或素材 token，不要填写完整链接。")
+        if key == "document":
+            context = {"plan": plan.fingerprint, "title": plan.context["title"], "app_id": app_id}
+            self._check_recovery_context(entry, context)
+            metadata = self.client.document_metadata(candidate)
+            if (
+                metadata.get("doc_token") != candidate
+                or metadata.get("doc_type") != "docx"
+                or metadata.get("title") != plan.context["title"]
+                or metadata.get("owner_id") != self.client.bot_open_id()
+            ):
+                raise UserError("候选文档的标识、标题或应用所有权不一致，未关联。")
+            if entry.get("started_at"):
+                try:
+                    created_at = float(metadata.get("create_time", 0))
+                except (TypeError, ValueError) as exc:
+                    raise UserError("候选文档缺少可核验的创建时间，未关联。") from exc
+                if created_at < entry["started_at"] - 5 or created_at > time.time() + 5:
+                    raise UserError("候选文档的创建时间与本次写入不符，未关联。")
+            blocks = self.client.blocks(candidate)
+            if (
+                len(blocks) != 1
+                or blocks[0].get("block_id") != candidate
+                or blocks[0].get("block_type") != 1
+                or blocks[0].get("children")
+            ):
+                raise UserError("候选文档不是空白文档，未关联，也不会覆盖现有内容。")
+            result: dict = {"document": {"document_id": candidate}}
+        elif key.endswith(":upload"):
+            context = self._upload_recovery_context(key, plan)
+            self._check_recovery_context(entry, context)
+            self._check_media_location(context, candidate)
+            if self.client.download_digest(candidate) != context["sha256"]:
+                raise UserError("候选素材与本次待上传文件的摘要不一致，未关联。")
+            result = {"file_token": candidate}
+        else:
+            raise UserError("此步骤不支持人工关联；请使用核对状态续接完成回读。")
+        self.journal[key] = {
+            **entry,
+            "schema_version": JOURNAL_VERSION,
+            "state": "done",
+            "input": context,
+            "result": result,
+            "recovery": {"method": "manual_readback", "candidate": candidate, "at": time.time()},
+        }
+        self.save(self.journal)
+
+    @staticmethod
+    def _check_recovery_context(entry: dict, context: dict) -> None:
+        if entry.get("input") and entry["input"] != context:
+            raise UserError("候选对象与原写入步骤的上下文不一致，未关联。")
+
+    def _upload_recovery_context(self, key: str, plan: PublicationPlan) -> dict:
+        base_key = key.removesuffix(":upload")
+        if base_key not in plan.uploads:
+            raise UserError("上传步骤不属于本次计划，未关联。")
+        document = self.journal.get("document", {})
+        doc = document.get("result", {}).get("document", {}).get("document_id")
+        created = self.journal.get(base_key + ":create", {}).get("result", {}).get("children", [])
+        if document.get("state") != "done" or not doc or len(created) != 1:
+            raise UserError("原上传步骤缺少可核验的文档或占位块，未关联。")
+        root = created[0]
+        kind = "file" if base_key.startswith("original-") else "image"
+        block_type = 23 if kind == "file" else 27
+        node = root
+        for _ in range(4):
+            if node.get("block_type") == block_type:
+                break
+            children = node.get("children", [])
+            if len(children) != 1:
+                raise UserError("原上传占位块结构异常，未关联。")
+            child = children[0]
+            node = child if isinstance(child, dict) else self.client.block(doc, child)
+        if node.get("block_type") != block_type or not root.get("parent_id"):
+            raise UserError("原上传占位块归属不完整，未关联。")
+        return {
+            "plan": plan.fingerprint,
+            "document_id": doc,
+            "parent_id": root["parent_id"],
+            "root_id": root["block_id"],
+            "block_id": node["block_id"],
+            "kind": kind,
+            "sha256": plan.uploads[base_key],
+        }
+
+    def _check_media_location(self, context: dict, candidate: str) -> None:
+        doc, root_id, block_id = (context["document_id"], context["root_id"], context["block_id"])
+        root = self.client.block(doc, root_id)
+        block = self.client.block(doc, block_id)
+        if root.get("parent_id") != context["parent_id"]:
+            raise UserError("素材占位块的位置已改变，未关联。")
+        if root_id != block_id and (
+            root.get("children") != [block_id] or block.get("parent_id") != root_id
+        ):
+            raise UserError("素材容器与原上传块的归属不一致，未关联。")
+        if block.get("block_type") != (27 if context["kind"] == "image" else 23) or block.get(
+            context["kind"], {}
+        ).get("token") not in {None, "", candidate}:
+            raise UserError("素材占位块类型或已有绑定不一致，未关联。")
+        child = root_id
+        parent = context["parent_id"]
+        for _ in range(12):
+            container = self.client.block(doc, parent)
+            if child not in container.get("children", []):
+                break
+            if parent == doc:
+                return
+            child, parent = parent, container.get("parent_id", "")
+            if not parent:
+                break
+        raise UserError("无法证明素材占位块属于原任务文档，未关联。")
+
     def publish(
         self,
         parsed: ParsedDocument,
@@ -258,28 +442,17 @@ class Publisher:
         target: Target,
         digest: str,
         filename: str,
+        *,
+        app_id: str = "",
     ) -> dict:
-        validate_upload_files(parsed, source, assets)
-        list_ancestors = 0
-        for element in parsed.elements:
-            if element.list_depth > list_ancestors:
-                raise UserError("转换结果中的列表层级缺少父项，请重新获取后核对。")
-            list_ancestors = element.list_depth + (element.kind in {"bullet", "ordered"})
-            if element.runs and "".join(run.text for run in element.runs) != element.text:
-                raise UserError("转换结果的富文本与正文不一致，请重新获取后核对。")
-            if element.table_runs and (
-                [["".join(run.text for run in cell) for cell in row] for row in element.table_runs]
-                != element.rows
-            ):
-                raise UserError("转换结果的表格富文本与正文不一致，请重新获取后核对。")
-            if element.kind == "code":
-                if not element.code_reviewed or not element.text.strip():
-                    raise UserError("请先在预览中保存所有代码片段的校对结果。")
-                if len(element.text) > 20000:
-                    raise UserError("单个代码片段超过 20000 字符，请拆分后再发布。")
+        plan = self.prepare_plan(
+            parsed, source, assets, title, target, digest, filename, app_id=app_id
+        )
         document = self.effect(
             "document",
             lambda: self.client.request("POST", "/docx/v1/documents", json={"title": title}),
+            context={"plan": plan.fingerprint, "title": title, "app_id": plan.context["app_id"]},
+            validate=lambda result: bool(result.get("document", {}).get("document_id")),
         )
         doc = document.get("document", {}).get("document_id")
         if not doc:
@@ -290,7 +463,8 @@ class Publisher:
         list_parents: list[str] = []
         asset_digests = {asset.name: asset.digest for asset in parsed.assets}
 
-        for index, element in enumerate(parsed.elements):
+        for index, planned in enumerate(plan.elements):
+            element = planned.element
             key = f"element-{index}"
             parent = list_parents[element.list_depth - 1] if element.list_depth else doc
             list_parents = list_parents[: element.list_depth]
@@ -306,39 +480,15 @@ class Publisher:
                     roots.append(media["root"])
             elif element.kind == "table":
                 rows = element.rows
-                if not rows or not rows[0] or any(len(r) != len(rows[0]) for r in rows):
-                    raise UserError("转换结果中表格不规则，已停止发布。")
-                table = self.children(
-                    key,
-                    doc,
-                    parent,
-                    [
-                        {
-                            "block_type": 31,
-                            "table": {
-                                "property": {"row_size": len(rows), "column_size": len(rows[0])}
-                            },
-                        }
-                    ],
-                )[0]
+                table = self.children(key, doc, parent, list(planned.blocks))[0]
                 if parent == doc:
                     roots.append(table["block_id"])
                 table = self.client.block(doc, table["block_id"])
                 cells = table.get("table", {}).get("cells") or table.get("children", [])
                 if len(cells) != len(rows) * len(rows[0]):
                     raise UncertainWrite("表格单元格数量不符，已停止发布。")
-                for cell_index, text in enumerate(cell for row in rows for cell in row):
-                    if element.table_runs:
-                        row_index, column_index = divmod(cell_index, len(rows[0]))
-                        nodes = element_blocks(
-                            Element(
-                                kind="text",
-                                text=text,
-                                runs=element.table_runs[row_index][column_index],
-                            )
-                        )
-                    else:
-                        nodes = text_blocks(text)
+                for cell_index, planned_nodes in enumerate(planned.cells):
+                    nodes = list(planned_nodes)
                     created = self.children(
                         f"{key}:cell-{cell_index}", doc, cells[cell_index], nodes, cell=True
                     )
@@ -361,7 +511,7 @@ class Publisher:
                     }
                 )
             else:
-                nodes = element_blocks(element)
+                nodes = list(planned.blocks)
                 for start in range(0, len(nodes), 50):
                     batch = nodes[start : start + 50]
                     created = self.children(f"{key}:{start}", doc, parent, batch)
@@ -392,10 +542,9 @@ class Publisher:
         expected.append(attachment)
         roots.append(attachment["root"])
         self.progress("verifying", "核对正文、表格、素材及原附件", document_id=doc)
-        self.verify(doc, expected, roots)
-        if self.client.download_digest(attachment["token"]) != digest:
-            raise UserError("原附件下载摘要不一致，已停止归档。")
+        self.verify_plan(doc, plan)
         self.journal["verified"] = {
+            "schema_version": JOURNAL_VERSION,
             "state": "done",
             "result": {"expected": expected, "roots": roots},
         }
@@ -433,9 +582,7 @@ class Publisher:
             raise UserError("飞书只创建了迁入申请，尚未归档；请检查知识库编辑权限。")
         node = self.confirm_move(doc, target, moved)
         self.progress("verifying", "核对归档后的正文与附件读取权限", document_id=doc)
-        self.verify(doc, expected, roots)
-        if self.client.download_digest(attachment["token"]) != digest:
-            raise UserError("归档后原附件摘要不一致，请核对知识库文档。")
+        self.verify_plan(doc, plan)
         return {
             "document_id": doc,
             "wiki_token": node["node_token"],
@@ -515,6 +662,10 @@ class Publisher:
         root = blocks.get(doc) or self.client.block(doc, doc)
         if root.get("children", []) != roots:
             raise UserError("核对失败：文档顶层内容数量或顺序不一致。")
+
+    def verify_plan(self, doc: str, plan: PublicationPlan) -> None:
+        """Prove current content matches a candidate, including legacy documents."""
+        PlanVerifier(self.client, doc).verify(plan)
 
     def confirm_move(self, doc: str, target: Target, moved: dict) -> dict:
         for _ in range(30):

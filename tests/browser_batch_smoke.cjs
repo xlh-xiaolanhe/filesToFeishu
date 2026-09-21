@@ -30,9 +30,11 @@ const fs = require("node:fs/promises");
     await page.locator("#target").fill("https://test.feishu.cn/wiki/parent");
     await page.locator("#title").fill("第一篇独立标题");
     await page.locator("#confirmed").check();
+    await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
     await open("second.pdf");
     await page.locator("#title").fill("第二篇独立标题");
     await page.locator("#confirmed").check();
+    await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
     assert.match(await page.locator("#publish-batch").textContent(), /（2）/);
     await open("first.pdf");
     assert.equal(await page.locator("#title").inputValue(), "第一篇独立标题");
@@ -51,8 +53,10 @@ const fs = require("node:fs/promises");
     assert.equal(await page.locator("#confirmed").isChecked(), false);
     assert.equal(await page.locator("#publish-batch").isDisabled(), true);
     await page.locator("#confirmed").check();
+    await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
     await open("second.pdf");
     await page.locator("#confirmed").check();
+    await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
     await page.locator("#publish-batch").click();
     await page.waitForFunction(() => document.querySelector("#queue-summary").textContent.includes("已保存 2"));
     assert.equal(await page.locator(".queue-row a").count(), 2);
@@ -69,6 +73,7 @@ const fs = require("node:fs/promises");
       await page.locator(`.queue-row[data-job-id="${id}"]`).getByRole("button", {name: "打开", exact: true}).click();
       await page.locator(".article-preview").waitFor();
       await page.locator("#confirmed").check();
+    await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
     }
     assert.match(await page.locator("#publish-batch").textContent(), /（2）/);
     // Opening an older task can change the target without an input event.
@@ -91,12 +96,14 @@ const fs = require("node:fs/promises");
       await page.locator(`.queue-row[data-job-id="${id}"]`).getByRole("button", {name: "打开", exact: true}).click();
       await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
       await page.locator("#confirmed").check();
+    await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
     }
     await page.locator(".code-editor textarea").fill("const corrected = 1;\n  // preserve indent");
     assert.match(await page.locator("#publish-batch").textContent(), /（1）/);
     await page.locator(".code-save").click();
     await page.locator(".code-save").waitFor({state: "hidden"});
     await page.locator("#confirmed").check();
+    await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
     // Changing a common target invalidates both prior confirmations.
     await page.locator("#target").fill("https://test.feishu.cn/wiki/parent");
     assert.match(await page.locator("#publish-batch").textContent(), /（0）/);
@@ -104,6 +111,7 @@ const fs = require("node:fs/promises");
       await page.locator(`.queue-row[data-job-id="${id}"]`).getByRole("button", {name: "打开", exact: true}).click();
       await page.locator(".article-preview").waitFor();
       await page.locator("#confirmed").check();
+    await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
     }
     await page.waitForFunction(() => [...document.querySelectorAll(".article-preview img")].every(img => img.complete && img.naturalWidth > 0));
     await fs.mkdir("output/playwright", {recursive: true});

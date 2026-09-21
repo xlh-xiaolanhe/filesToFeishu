@@ -234,3 +234,64 @@ def test_download_redirect_never_forwards_feishu_credentials_to_asset_host():
     )
     assert client.download_digest("file") == hashlib.sha256(b"original-zip").hexdigest()
     assert len(requests) == 3
+
+
+def test_recovery_metadata_and_bot_identity_use_current_application():
+    import json
+
+    calls = []
+
+    def handle(request):
+        if "tenant_access_token" in request.url.path:
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "app-token", "expire": 7200}
+            )
+        assert request.headers["authorization"] == "Bearer app-token"
+        calls.append(request)
+        if request.url.path.endswith("metas/batch_query"):
+            assert request.url.params["user_id_type"] == "open_id"
+            assert json.loads(request.content) == {
+                "request_docs": [{"doc_token": "doc", "doc_type": "docx"}]
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "metas": [
+                            {
+                                "doc_token": "doc",
+                                "doc_type": "docx",
+                                "title": "My title",
+                                "owner_id": "bot-id",
+                            }
+                        ]
+                    },
+                },
+            )
+        assert request.url.path.endswith("bot/v3/info")
+        return httpx.Response(200, json={"code": 0, "bot": {"open_id": "bot-id"}})
+
+    client = FeishuClient(
+        Settings(feishu_app_id="app", feishu_app_secret="secret"),
+        httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    assert client.document_metadata("doc")["owner_id"] == client.bot_open_id() == "bot-id"
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("response", [{"metas": []}, {"metas": [{"doc_token": "other"}]}])
+def test_incomplete_metadata_is_not_recovery_evidence(response):
+    def handle(request):
+        if "tenant_access_token" in request.url.path:
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "token", "expire": 7200}
+            )
+        return httpx.Response(200, json={"code": 0, "data": response})
+
+    client = FeishuClient(
+        Settings(feishu_app_id="app", feishu_app_secret="secret"),
+        httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    with pytest.raises(UserError, match="完整元数据"):
+        client.document_metadata("doc")

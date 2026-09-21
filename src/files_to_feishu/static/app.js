@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 let job = null, health = null, timer = null, painted = "";
 let savingCode = false, pendingAction = false, titleEdited = false, selecting = false, selectionVersion = 0;
 const codeDrafts = new Map(), reviews = new Map();
-let allJobs = [], batchFilter = "", queueTimer = null, historyVersion = 0;
+let allJobs = [], batchFilter = "", queueTimer = null, historyVersion = 0, historyOffset = 0;
 // Remove only this app's old remembered fields, including data from earlier versions.
 try { for (const key of ["pdf-target", "pdf-job", "content-batch"]) localStorage.removeItem(key); }
 catch { /* Storage may be unavailable; form initialization still works. */ }
@@ -13,24 +13,34 @@ function invalidateReview() {
   $("confirmed").checked = false;
 }
 function batchItems() { return allJobs.filter(item => batchFilter && item.batch_id === batchFilter); }
-function publishable(item) { return item?.parsed && ["ready", "failed", "needs_review"].includes(item.status); }
+function publishable(item) { return item?.parsed && ["ready", "failed", "needs_review", "succeeded"].includes(item.status); }
 function reviewedBatch() { return batchItems().filter(item => publishable(item) && reviews.has(item.id)); }
-function rememberReview() {
+async function rememberReview() {
   if (!job) return;
   const dirty = [...codeDrafts.keys()].some(key => key.startsWith(`${job.id}:`));
   if ($("confirmed").checked && publishable(job) && !dirty && !job.preview.elements.some(e => e.kind === "code" && !e.code_reviewed)) {
-    reviews.set(job.id, {title: $("title").value, review_token: job.review_token || "", url: $("target").value});
+    const id = job.id;
+    const review = {title: $("title").value, review_token: job.review_token || "", url: $("target").value};
+    pendingAction = true; enable();
+    try {
+      const result = await post(`/api/jobs/${id}/review`, {...review, expected_revision: job.content_revision});
+      if (job?.id === id && $("confirmed").checked && review.title === $("title").value && review.url === $("target").value) {
+        reviews.set(id, {...review, confirmation_token: result.confirmation_token});
+        message("error", "");
+      }
+    } catch (error) { invalidateReview(); message("error", error.message); }
+    finally { pendingAction = false; enable(); }
   } else reviews.delete(job.id);
 }
 function renderQueue() {
-  $("queue-panel").hidden = !allJobs.length;
+  $("queue-panel").hidden = !allJobs.length && historyOffset === 0;
   const items = batchFilter ? batchItems() : allJobs;
   const counts = {};
   for (const item of items) counts[labels[item.status] || item.status] = (counts[labels[item.status] || item.status] || 0) + 1;
   $("queue-summary").textContent = `${items.length} 个任务 · ` + Object.entries(counts).map(([name, count]) => `${name} ${count}`).join(" / ");
   if (allJobs.some(item => item.status === "waiting_verification")) $("queue-summary").textContent += " · 队列等待验证，请打开等待中的任务继续或取消";
   $("queue-list").replaceChildren();
-  for (const item of items.slice().reverse()) {
+  for (const item of items) {
     const row = element("div", undefined, "queue-row"); row.dataset.jobId = item.id;
     row.setAttribute("aria-current", String(job?.id === item.id));
     const info = element("div", undefined, "queue-info");
@@ -44,7 +54,7 @@ function renderQueue() {
     const remove = element("button", "删除", "secondary delete-job"); remove.type = "button";
     const busy = active.has(item.status) || (item.notifications || []).some(n => ["pending", "sending"].includes(n.status));
     const unresolved = item.status !== "succeeded" && (item.document_id || item.content_locked);
-    remove.disabled = busy || unresolved || pendingAction || savingCode || selecting;
+    remove.disabled = (item.allowed_actions ? !item.allowed_actions.includes("delete") : busy || unresolved) || pendingAction || savingCode || selecting;
     remove.title = busy ? "任务处理或通知发送完成后可删除" : (unresolved ? "已有未完成核验的飞书写入，请先核对原任务" : "从本地历史列表删除");
     remove.addEventListener("click", () => deleteJob(item));
     row.append(remove);
@@ -118,6 +128,26 @@ function renderNotifications(item) {
     }
   }
 }
+function renderRecovery(item) {
+  const box = $("recovery"); box.replaceChildren(); box.hidden = !item?.recovery_steps?.length;
+  if (box.hidden) return;
+  box.append(element("p", "部分写入结果不确定。请在飞书找到候选文档或素材令牌，系统核验匹配后才允许续接。无法取得可靠候选时保留待核对状态。"));
+  for (const step of item.recovery_steps) {
+    const label = element("label", step.kind === "document" ? "候选文档 ID" : `候选素材令牌（${step.key}）`);
+    const input = element("input"); input.autocomplete = "off";
+    const button = element("button", "核验并关联", "secondary"); button.type = "button";
+    button.addEventListener("click", async () => {
+      if (!input.value.trim() || pendingAction) return;
+      pendingAction = true; enable();
+      try {
+        await post(`/api/jobs/${item.id}/recover`, {key: step.key, candidate: input.value.trim(), expected_revision: item.content_revision});
+        invalidateReview(); await refresh();
+      } catch (error) { message("error", error.message); }
+      finally { pendingAction = false; enable(); }
+    });
+    label.append(input); box.append(label, button);
+  }
+}
 function sourceKind() { return job?.source_kind || job?.preview?.source_kind || "pdf"; }
 function setupNotes() {
   if (!health) return;
@@ -140,7 +170,7 @@ function sourceInputs() {
 function enable() {
   const unreviewed = job?.preview?.elements.some(e => e.kind === "code" && !e.code_reviewed);
   const busy = savingCode || pendingAction || selecting;
-  $("publish").disabled = !job?.parsed || !["ready", "failed", "needs_review", "succeeded"].includes(job?.status) || !health?.feishu_configured || !$("target").value.trim() || !$("confirmed").checked || unreviewed || !!document.querySelector('.code-editor[data-dirty="true"]') || busy;
+  $("publish").disabled = !reviews.has(job?.id) || !job?.parsed || !["ready", "failed", "needs_review", "succeeded"].includes(job?.status) || !health?.feishu_configured || !$("target").value.trim() || !$("confirmed").checked || unreviewed || !!document.querySelector('.code-editor[data-dirty="true"]') || busy;
   $("history").disabled = busy || job?.status === "cancelling";
   $("confirmed").disabled = busy || !job?.parsed || active.has(job?.status) || job?.status === "cancelled";
   const codeLocked = busy || job?.status !== "ready" || job?.content_locked;
@@ -164,6 +194,7 @@ function element(tag, text, className) { const node=document.createElement(tag);
 function asset(name) { return `/api/jobs/${job.id}/assets/${encodeURIComponent(name)}`; }
 function codeEditor(item, index) {
   const draftKey = `${job.id}:${index}`, draft = codeDrafts.get(draftKey);
+  let baseRevision = draft?.expected_revision ?? job.content_revision;
   const editor = element("div", undefined, "code-editor");
   const toolbar = element("div", undefined, "code-toolbar");
   const input = element("textarea"), language = element("select");
@@ -200,7 +231,7 @@ function codeEditor(item, index) {
     cancel.hidden = editor.dataset.dirty !== "true";
   }
   function dirty() {
-    codeDrafts.set(draftKey, {text: input.value, language: language.value});
+    codeDrafts.set(draftKey, {text: input.value, language: language.value, expected_revision: baseRevision});
     editor.dataset.dirty = "true";
     invalidateReview();
     updateEditor();
@@ -220,7 +251,10 @@ function codeEditor(item, index) {
     savingCode = true;
     enable();
     try {
-      await post(`/api/jobs/${job.id}/code/${index}`, {text: input.value, language: language.value});
+      const saved = await post(`/api/jobs/${job.id}/code/${index}`, {text: input.value, language: language.value, expected_revision: baseRevision});
+      // Only our own successful edit can advance other drafts from the same baseline.
+      for (const [key, value] of codeDrafts) if (key.startsWith(`${job.id}:`) && value.expected_revision === baseRevision) value.expected_revision = saved.content_revision;
+      baseRevision = saved.content_revision;
       codeDrafts.delete(draftKey);
       editor.dataset.dirty = "false";
       painted = "";
@@ -229,6 +263,18 @@ function codeEditor(item, index) {
       await refresh();
     } catch (error) {
       message("error", error.message);
+      if (error.status === 409) {
+        const reload = element("button", "加载最新版本对比（保留草稿）", "secondary"); reload.type = "button";
+        reload.addEventListener("click", async () => {
+          const latest = await api(`/api/jobs/${job.id}`);
+          const comparison = element("pre", latest.preview.elements[index]?.text || "该区域已不存在", "code-conflict");
+          editor.append(comparison);
+          reload.textContent = "已显示服务器版本；比较后再次保存将采用新版本号";
+          reload.disabled = true; job = latest; baseRevision = latest.content_revision;
+          dirty();
+        });
+        editor.append(reload);
+      }
     } finally {
       savingCode = false;
       enable();
@@ -297,7 +343,7 @@ function renderElements(content, indexedItems) {
       convert.type = "button";
       convert.addEventListener("click", () => {
         convert.hidden = true;
-        codeDrafts.set(`${job.id}:${index}`, {text: "", language: "plaintext"});
+        codeDrafts.set(`${job.id}:${index}`, {text: "", language: "plaintext", expected_revision: job.content_revision});
         figure.append(codeEditor(item, index)); invalidateReview(); enable();
       });
       figure.append(convert);
@@ -388,7 +434,7 @@ async function refresh() {
     if (!hadPreview && job.parsed) invalidateReview();
     $("status").textContent = `${labels[job.status] || job.status} · ${job.progress}`;
     message("error", job.error); message("result", "");
-    renderNotifications(job);
+    renderNotifications(job); renderRecovery(job);
     if (job.status === "succeeded") {
       message("result", "保存成功，正文、附件与目标位置已核对。 ");
       const link = element("a", "打开飞书文档 ↗"); const href = externalUrl(job.url);
@@ -427,13 +473,17 @@ async function select(id) {
 
 async function history() {
   const version = ++historyVersion;
-  const items = await api("/api/jobs");
+  const items = await api(historyOffset ? `/api/jobs?limit=50&offset=${historyOffset}` : "/api/jobs");
   if (version !== historyVersion) return;
   allJobs = items;
   const ids = new Set(items.map(item => item.id));
-  for (const id of reviews.keys()) if (!ids.has(id)) reviews.delete(id);
-  for (const key of codeDrafts.keys()) if (!ids.has(key.split(":")[0])) codeDrafts.delete(key);
-  if (job && !ids.has(job.id)) clearSelection();
+  if (job && !ids.has(job.id)) {
+    try { await api(`/api/jobs/${job.id}`); }
+    catch (error) { if (error.status === 404) clearSelection(); else throw error; }
+  }
+  $("history-newer").disabled = historyOffset === 0;
+  $("history-older").disabled = items.length < 50;
+  $("history-page").textContent = `第 ${Math.floor(historyOffset / 50) + 1} 页（每页最多 50 项）`;
   const batches = new Map();
   for (const item of items) if (item.batch_id && !batches.has(item.batch_id)) batches.set(item.batch_id, item.created_at);
   $("batch-filter").replaceChildren(element("option", "全部任务")); $("batch-filter").firstChild.value = "";
@@ -445,6 +495,8 @@ async function history() {
   if (job) $("history").value = job.id;
   renderQueue();
 }
+$("history-newer").addEventListener("click", async () => { historyOffset = Math.max(0, historyOffset - 50); await history(); });
+$("history-older").addEventListener("click", async () => { historyOffset += 50; await history(); });
 $("source-kind").addEventListener("change", () => { sourceInputs(); invalidateReview(); enable(); });
 $("article-url").addEventListener("input", () => { invalidateReview(); enable(); });
 $("file").addEventListener("change", () => { invalidateReview(); enable(); });
@@ -471,7 +523,7 @@ $("upload-form").addEventListener("submit", async event => {
         created.push(entry);
       } catch (error) { errors.push(`${wechat ? input : input.name}：${error.message}`); }
     }
-    batchFilter = batchId;
+    historyOffset = 0; batchFilter = batchId;
     await history();
     if (created.length) await select(created[0].id);
     const report = `已提交 ${created.length}/${inputs.length} 个任务。` + (errors.length ? "\n未成功提交，请处理后单独重试：\n" + errors.join("\n") : "可在队列中逐篇核对。");
@@ -491,17 +543,17 @@ $("continue-fetch").addEventListener("click", () => fetchAction("continue"));
 $("cancel-fetch").addEventListener("click", () => fetchAction("cancel"));
 $("resolve").addEventListener("click", async () => {
   $("resolve").disabled = true;
-  try { const target = await post("/api/targets/resolve", {url: $("target").value}); localStorage.setItem("pdf-target", $("target").value); message("target-name", `保存为「${target.title}」的子页面`); message("error", ""); }
+  try { const target = await post("/api/targets/resolve", {url: $("target").value}); message("target-name", `保存为「${target.title}」的子页面`); message("error", ""); }
   catch (error) { message("error", error.message); message("target-name", ""); }
   finally { $("resolve").disabled = false; }
 });
 $("target").addEventListener("input", () => { message("target-name", ""); reviews.clear(); invalidateReview(); enable(); });
-$("confirmed").addEventListener("change", () => { rememberReview(); enable(); });
+$("confirmed").addEventListener("change", () => { rememberReview().catch(e => message("error", e.message)); enable(); });
 $("history").addEventListener("change", () => { if ($("history").value) select($("history").value).catch(e => message("error", e.message)); });
 $("publish").addEventListener("click", async () => {
   if (!job || !$("confirmed").checked || pendingAction) return;
   pendingAction = true; enable();
-  try { await post(`/api/jobs/${job.id}/publish`, {url: $("target").value, title: $("title").value, confirmed: $("confirmed").checked, review_token: job.review_token || ""}); await refresh(); }
+  try { await post(`/api/jobs/${job.id}/publish`, {url: $("target").value, title: $("title").value, confirmed: $("confirmed").checked, review_token: job.review_token || "", confirmation_token: reviews.get(job.id)?.confirmation_token || ""}); await refresh(); }
   catch (error) { message("error", error.message); }
   finally { pendingAction = false; enable(); }
 });
@@ -517,7 +569,7 @@ $("publish-batch").addEventListener("click", async () => {
       const review = reviews.get(item.id);
       try {
         if (review.url !== target) throw new Error("保存位置已改变，请重新核对该任务");
-        await post(`/api/jobs/${item.id}/publish`, {url: target, title: review.title, confirmed: true, review_token: review.review_token});
+        await post(`/api/jobs/${item.id}/publish`, {url: target, title: review.title, confirmed: true, review_token: review.review_token, confirmation_token: review.confirmation_token});
         accepted++; reviews.delete(item.id);
       } catch (error) { errors.push(`${review.title || item.filename}：${error.message}`); }
     }

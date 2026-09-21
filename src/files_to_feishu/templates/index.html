@@ -9,13 +9,14 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <header><div class="brand">纸页 <span>→</span> 知识库</div><span class="badge">本地转换 · v0.5.1</span></header>
+  <header><div class="brand">纸页 <span>→</span> 知识库</div><span class="badge">本地转换 · v0.6.0</span></header>
   <main>
     <section class="intro"><p class="eyebrow">FILES TO FEISHU</p><h1>让文档，成为可编辑的知识。</h1><p>导入 PDF 或微信公众号文章，核对完整内容后保存到指定飞书知识库。文字、代码与图片按原文顺序保留，原件随文档附上。</p></section>
     <div id="setup" class="notice" role="status" hidden></div>
     <section id="queue-panel" class="panel" hidden aria-label="批量任务队列">
       <div class="queue-heading"><h2>任务队列</h2><label for="batch-filter">查看批次</label><select id="batch-filter"><option value="">全部任务</option></select></div>
       <p id="queue-summary" class="muted" role="status"></p>
+      <nav aria-label="任务历史分页"><button id="history-newer" type="button" class="secondary">较新任务</button> <span id="history-page"></span> <button id="history-older" type="button" class="secondary">更早任务</button></nav>
       <div id="queue-list"></div>
       <div id="batch-message" class="notice" role="status" hidden></div>
       <p class="muted small">逐篇打开预览并勾选核对确认，再统一保存到下方填写的知识库父页面。刷新后需重新确认；等待验证时队列暂停。</p>
@@ -53,7 +54,8 @@
         <div id="status" role="status" aria-live="polite">等待选择文件</div>
         <div id="error" class="error" role="alert" hidden></div>
         <div id="result" class="success" hidden></div>
-        <div id="notifications" class="notice" role="status" hidden></div>
+        <div id="recovery" class="notice" hidden></div>
+          <div id="notifications" class="notice" role="status" hidden></div>
         <div id="verification" class="notice" hidden>
           <p>文章需要完成验证后才能继续获取。请完成独立浏览器窗口中的验证，再点击“继续获取”；正文未完整获取前不能发布。</p>
           <div class="task-actions"><button id="continue-fetch" type="button">继续获取</button></div>

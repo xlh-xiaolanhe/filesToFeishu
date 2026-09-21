@@ -61,6 +61,7 @@ class Element(BaseModel):
 
 
 class ParsedDocument(BaseModel):
+    schema_version: Literal[1] = 1
     pages: int | None = None
     elements: list[Element]
     notices: list[Notice] = Field(default_factory=list)

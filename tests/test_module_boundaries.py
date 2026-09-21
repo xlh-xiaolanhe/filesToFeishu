@@ -88,9 +88,11 @@ def test_existing_serialized_job_remains_readable_after_reorganization(tmp_path)
     service = app.state.service
     try:
         parsed = service.parsed(job["id"])
+        assert parsed.schema_version == 1
         assert (
             parsed.model_dump(
                 exclude={
+                    "schema_version": True,
                     "source_kind": True,
                     "metadata": True,
                     "assets": True,

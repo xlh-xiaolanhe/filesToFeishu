@@ -1,0 +1,110 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FEISHU_APP_ID: ''
+  FEISHU_APP_SECRET: ''
+  FEISHU_PARENT_URL: ''
+  FEISHU_NOTIFY_ENABLED: 'false'
+  RUN_LIVE_TESTS: '0'
+
+jobs:
+  fast:
+    name: fast-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          version: '0.11.16'
+          python-version: '3.12'
+          enable-cache: true
+      - name: Install locked fast-test dependencies (no parser extra)
+        run: uv sync --locked --group dev
+      - name: Fast tests, Ruff, mypy and committed whitespace check
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: .venv/bin/python scripts/check_ci.py fast --base "$BASE_SHA"
+      - name: Preserve test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fast-${{ matrix.os }}-${{ github.sha }}
+          path: output/ci/
+          retention-days: 14
+          if-no-files-found: warn
+
+  browser:
+    name: browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          version: '0.11.16'
+          python-version: '3.12'
+          enable-cache: true
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install locked Python and matching Node Playwright
+        run: |
+          uv sync --locked --group dev
+          PLAYWRIGHT_VERSION="$(.venv/bin/python -c 'from importlib.metadata import version; print(version("playwright"))')"
+          npm install --prefix "$RUNNER_TEMP/node-tools" --no-save --ignore-scripts "playwright@$PLAYWRIGHT_VERSION"
+          echo "NODE_PATH=$RUNNER_TEMP/node-tools/node_modules" >> "$GITHUB_ENV"
+          .venv/bin/python -m playwright install --with-deps chrome
+      - name: Isolated browser regression (mock Feishu, no models)
+        run: .venv/bin/python scripts/check_ci.py browser
+      - name: Preserve reports, test-server logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: browser-${{ github.sha }}
+          path: |
+            output/ci/
+            output/playwright/
+          retention-days: 14
+          if-no-files-found: warn
+
+  # Configure this stable name as a required status check in GitHub branch rules.
+  # Workflow files cannot enable repository branch protection by themselves.
+  quality-gate:
+    name: quality-gate
+    if: always()
+    needs: [fast, browser]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every mandatory suite to pass
+        env:
+          FAST_RESULT: ${{ needs.fast.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+        run: |
+          test "$FAST_RESULT" = success
+          test "$BROWSER_RESULT" = success
+          echo 'Fast and browser checks passed. Model/OCR and live Feishu acceptance are separate.' >> "$GITHUB_STEP_SUMMARY"

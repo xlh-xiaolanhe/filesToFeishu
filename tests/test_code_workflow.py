@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from files_to_feishu.app import create_app
 from files_to_feishu.config import Settings
 from files_to_feishu.models import CodeSource, Element, ParsedDocument
+from tests.helpers import reviewed_payload
 from tests.integrations.feishu.test_publisher import MemoryFeishu
 from tests.test_workflow import wait
 
@@ -32,7 +33,12 @@ def test_code_review_persistence_publish_lock_and_changed_conversion_dedup(tmp_p
             return job["id"]
 
         def publish(job_id):
-            assert client.post(f"/api/jobs/{job_id}/publish", json=payload).status_code == 202
+            assert (
+                client.post(
+                    f"/api/jobs/{job_id}/publish", json=reviewed_payload(client, job_id, payload)
+                ).status_code
+                == 202
+            )
             result = wait(client, job_id, {"succeeded", "failed"})
             assert result["status"] == "succeeded", result
             return result
@@ -50,9 +56,23 @@ def test_code_review_persistence_publish_lock_and_changed_conversion_dedup(tmp_p
             )
         ]
         new_id = upload()
-        assert client.post(f"/api/jobs/{new_id}/publish", json=payload).status_code == 400
+        unreviewed = client.get(f"/api/jobs/{new_id}").json()
+        rejected = client.post(
+            f"/api/jobs/{new_id}/review",
+            json={
+                **payload,
+                "review_token": unreviewed["review_token"],
+                "expected_revision": unreviewed["content_revision"],
+            },
+        )
+        assert rejected.status_code == 400
+        assert "保存所有代码" in rejected.text
         assert remote.created == 1
-        edit = {"text": "const n = 1\n  n.toUperCase()", "language": "javascript"}
+        edit = {
+            "text": "const n = 1\n  n.toUperCase()",
+            "language": "javascript",
+            "expected_revision": client.get(f"/api/jobs/{new_id}").json()["content_revision"],
+        }
         assert client.post(f"/api/jobs/{new_id}/code/0", json=edit).status_code == 200
         restored = client.get(f"/api/jobs/{new_id}").json()["preview"]["elements"][0]
         assert restored["text"] == edit["text"]
@@ -97,9 +117,21 @@ def test_manual_image_to_code_rejects_invalid_content_and_preserves_reference(tm
             (1, {"text": "code"}, 400),
             (9, {"text": "code"}, 400),
         ]:
+            body["expected_revision"] = client.get(f"/api/jobs/{job['id']}").json()[
+                "content_revision"
+            ]
             assert client.post(base + str(index), json=body).status_code == status
         assert (
-            client.post(base + "0", json={"text": "<script>alert(1)</script>"}).status_code == 200
+            client.post(
+                base + "0",
+                json={
+                    "text": "<script>alert(1)</script>",
+                    "expected_revision": client.get(f"/api/jobs/{job['id']}").json()[
+                        "content_revision"
+                    ],
+                },
+            ).status_code
+            == 200
         )
         result = service.parsed(job["id"]).elements[0]
         assert result.kind == "code"

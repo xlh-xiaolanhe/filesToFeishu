@@ -10,6 +10,7 @@ from files_to_feishu.app import create_app
 from files_to_feishu.config import Settings
 from files_to_feishu.models import UserError
 from files_to_feishu.store import ACTIVE, JobNotFound, Store
+from tests.helpers import reviewed_payload
 from tests.integrations.feishu.test_publisher import MemoryFeishu
 from tests.test_wechat_workflow import PAYLOAD, URL, ArticleFixture
 from tests.test_workflow import fixture_parser, wait
@@ -33,7 +34,7 @@ def test_deleted_task_is_hidden_but_duplicate_publish_still_verified(tmp_path, p
         task = create()
         job_id = task["id"]
         wait(client, job_id, {"ready"})
-        client.post(f"/api/jobs/{job_id}/publish", json=PAYLOAD)
+        client.post(f"/api/jobs/{job_id}/publish", json=reviewed_payload(client, job_id, PAYLOAD))
         saved = wait(client, job_id, {"succeeded"})
         folder = service.folder(job_id)
         before = {p.relative_to(folder): p.read_bytes() for p in folder.rglob("*") if p.is_file()}
@@ -47,7 +48,8 @@ def test_deleted_task_is_hidden_but_duplicate_publish_still_verified(tmp_path, p
             assert client.post(f"/api/jobs/{job_id}/{action}", json=PAYLOAD).status_code == 404
         assert (
             client.post(
-                f"/api/jobs/{job_id}/code/0", json={"text": "x", "language": "plaintext"}
+                f"/api/jobs/{job_id}/code/0",
+                json={"text": "x", "language": "plaintext", "expected_revision": 1},
             ).status_code
             == 404
         )
@@ -60,7 +62,10 @@ def test_deleted_task_is_hidden_but_duplicate_publish_still_verified(tmp_path, p
         assert reopened.get(job_id, include_deleted=True)["journal"]
         duplicate = create()
         wait(client, duplicate["id"], {"ready"})
-        client.post(f"/api/jobs/{duplicate['id']}/publish", json=PAYLOAD)
+        client.post(
+            f"/api/jobs/{duplicate['id']}/publish",
+            json=reviewed_payload(client, duplicate["id"], PAYLOAD),
+        )
         result = wait(client, duplicate["id"], {"succeeded", "failed"})
         assert result["status"] == "succeeded", result
         assert result["url"] == saved["url"]

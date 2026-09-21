@@ -12,6 +12,7 @@ from files_to_feishu.integrations.feishu import FeishuClient
 from files_to_feishu.models import UncertainWrite, UserError
 from files_to_feishu.notifications import prepare_notification
 from files_to_feishu.store import Store
+from tests.helpers import reviewed_payload
 from tests.integrations.feishu.test_publisher import MemoryFeishu
 from tests.test_workflow import fixture_parser, wait
 
@@ -125,7 +126,8 @@ def test_delivery_failure_does_not_undo_success_and_only_certain_failures_can_re
         job_id = http.post("/api/jobs", files={"file": ("sample.pdf", pdf_bytes)}).json()["id"]
         wait(http, job_id, {"ready"})
         assert http.get(f"/api/jobs/{job_id}").json()["notifications"] == []
-        http.post(f"/api/jobs/{job_id}/publish", json={"url": "https://test.feishu.cn/wiki/parent"})
+        payload = reviewed_payload(http, job_id, {"url": "https://test.feishu.cn/wiki/parent"})
+        http.post(f"/api/jobs/{job_id}/publish", json=payload)
         expected = "failed" if type(failure) is UserError else "uncertain"
         saved, receipt = wait_notification(http, job_id, "succeeded", {expected})
         assert saved["status"] == "succeeded" and saved["url"]
@@ -143,7 +145,7 @@ def test_delivery_failure_does_not_undo_success_and_only_certain_failures_can_re
             assert response.status_code == 400 and len(client.messages) == 1
         assert client.created == 1
         # Verifying the existing document again cannot generate another outcome notification.
-        http.post(f"/api/jobs/{job_id}/publish", json={"url": "https://test.feishu.cn/wiki/parent"})
+        http.post(f"/api/jobs/{job_id}/publish", json=payload)
         wait(http, job_id, {"succeeded"})
     assert len(client.messages) == (2 if expected == "failed" else 1)
 

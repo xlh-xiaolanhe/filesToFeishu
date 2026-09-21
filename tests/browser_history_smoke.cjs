@@ -6,7 +6,7 @@ const http = require("node:http");
 const path = require("node:path");
 const root = path.resolve(__dirname, "../src/files_to_feishu");
 const batch = "b".repeat(32), selected = "a".repeat(32), processing = "c".repeat(32), sending = "d".repeat(32);
-const make = (id, status, extra = {}) => ({id, status, filename: `样例-${id[0]}.zip`, source_kind: "wechat", parsed: true, progress: "等待核对", notifications: [], preview: {source_kind: "wechat", metadata: {title: "原创标题"}, elements: [{kind: "text", text: "原创文章内容"}], notices: [], assets: []}, ...extra});
+const make = (id, status, extra = {}) => ({id, status, content_revision: 1, review_token: "1".repeat(64), filename: `样例-${id[0]}.zip`, source_kind: "wechat", parsed: true, progress: "等待核对", notifications: [], preview: {source_kind: "wechat", metadata: {title: "原创标题"}, elements: [{kind: "text", text: "原创文章内容"}], notices: [], assets: []}, ...extra});
 const jobs = new Map([
   [selected, make(selected, "ready", {batch_id: batch})],
   [processing, make(processing, "fetching")],
@@ -29,8 +29,19 @@ const server = http.createServer(async (request, response) => {
     await page.route("**/api/**", async route => {
       const req = route.request(), url = new URL(req.url()).pathname;
       if (url === "/api/health") return route.fulfill({json: {feishu_configured: true, models_ready: true, default_target: "https://test.feishu.cn/wiki/old", notifications_enabled: true}});
-      if (url === "/api/jobs") return route.fulfill({json: [...jobs.values()]});
+      if (url === "/api/jobs") {
+        const offset = Number(new URL(req.url()).searchParams.get("offset") || 0);
+        return route.fulfill({json: [...jobs.values()].slice(offset, offset + 50)});
+      }
+      if (url === "/api/targets/resolve") return route.fulfill({json: {title: "Test parent"}});
       const id = url.split("/")[3];
+      if (req.method() === "POST" && url.endsWith("/review")) {
+        const body = req.postDataJSON();
+        assert.equal(body.expected_revision, 1);
+        assert.equal(body.review_token, "1".repeat(64));
+        if (!body.url) return route.fulfill({status: 400, json: {detail: "请填写知识库父页面链接"}});
+        return route.fulfill({json: {confirmation_token: "2".repeat(64), content_revision: 1}});
+      }
       if (req.method() === "DELETE") {
         mutations.push(id);
         if (rejectDelete) return route.fulfill({status: 400, json: {detail: "任务正在处理中"}});
@@ -66,9 +77,12 @@ const server = http.createServer(async (request, response) => {
     await page.locator("#history").selectOption(selected);
     await page.locator(".article-preview").waitFor();
     await page.locator("#confirmed").check();
+    await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
     assert.equal(await page.locator("#publish").isDisabled(), true);
     await page.locator("#target").fill("https://test.feishu.cn/wiki/parent");
     await page.locator("#confirmed").check();
+    await page.waitForFunction(() => !document.querySelector("#confirmed").disabled);
+    await page.waitForFunction(() => !document.querySelector("#publish-batch").disabled);
     assert.match(await page.locator("#publish-batch").textContent(), /（1）/);
     page.once("dialog", dialog => dialog.dismiss());
     await page.getByRole("button", {name: "删除", exact: true}).click();
@@ -76,7 +90,7 @@ const server = http.createServer(async (request, response) => {
     rejectDelete = true;
     page.once("dialog", dialog => dialog.accept());
     await page.getByRole("button", {name: "删除", exact: true}).click();
-    await page.locator("#error").waitFor();
+    await page.waitForFunction(() => document.querySelector("#error").textContent.includes("正在处理"));
     assert.match(await page.locator("#error").textContent(), /正在处理/);
     assert.equal(await page.locator(".article-preview").isVisible(), true);
     rejectDelete = false;
@@ -108,6 +122,20 @@ const server = http.createServer(async (request, response) => {
     await page.reload();
     await page.waitForFunction(() => !document.querySelector("#convert").disabled);
     assert.equal(await page.locator("#queue-panel").isVisible(), false);
+    // Resolving an input must not recreate the legacy remembered target key.
+    await page.locator("#target").fill("https://test.feishu.cn/wiki/parent");
+    await page.locator("#resolve").click();
+    await page.waitForFunction(() => document.querySelector("#target-name").textContent.includes("Test parent"));
+    assert.equal(await page.evaluate(() => localStorage.getItem("pdf-target")), null);
+    // An exactly-full page can have an empty next page; navigation must remain available.
+    for (let i = 0; i < 50; i++) { const id = (i + 100).toString(16).padStart(32, "0"); jobs.set(id, make(id, "ready")); }
+    await page.waitForFunction(() => document.querySelectorAll(".queue-row").length === 50);
+    await page.locator("#history-older").click();
+    await page.waitForFunction(() => document.querySelectorAll(".queue-row").length === 0);
+    assert.equal(await page.locator("#queue-panel").isVisible(), true);
+    assert.equal(await page.locator("#history-newer").isEnabled(), true);
+    await page.locator("#history-newer").click();
+    await page.waitForFunction(() => document.querySelectorAll(".queue-row").length === 50);
     assert.deepEqual(errors, []);
     console.log("PASS: no remembered inputs; cancel/delete/reject; active/notification guards; batch/review cleanup; cross-tab deletion; empty history; mobile.");
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

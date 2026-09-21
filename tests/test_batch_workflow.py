@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from files_to_feishu.app import create_app
 from files_to_feishu.config import Settings
 from files_to_feishu.models import UserError
+from tests.helpers import reviewed_payload
 from tests.integrations.feishu.test_publisher import MemoryFeishu
 from tests.test_wechat_workflow import PAYLOAD, URL, ArticleFixture
 from tests.test_workflow import fixture_parser, wait
@@ -51,10 +52,15 @@ def test_multiple_pdfs_queue_failure_isolated_and_publish_serially(tmp_path, pdf
             ready = wait(client, job["id"], {"ready"})
             assert ready["batch_id"] == BATCH
         assert len(set(calls)) == 1
-        # Same content and target can reuse a verified result even in a batch.
+        # A duplicate may reuse only a completed, verified result, not an in-flight intent.
         for job in jobs[1:]:
-            assert client.post(f"/api/jobs/{job['id']}/publish", json=PAYLOAD).status_code == 202
-        for job in jobs[1:]:
+            assert (
+                client.post(
+                    f"/api/jobs/{job['id']}/publish",
+                    json=reviewed_payload(client, job["id"], {**PAYLOAD, "title": "Same title"}),
+                ).status_code
+                == 202
+            )
             assert wait(client, job["id"], {"succeeded", "failed"})["status"] == "succeeded"
         assert service.client.created == 1
 
@@ -104,18 +110,19 @@ def test_queued_publish_is_locked_and_stale_review_is_rejected(tmp_path, pdf_byt
     service.parser = fixture_parser
     with TestClient(app) as client:
         pdf = client.post("/api/jobs", files={"file": ("a.pdf", pdf_bytes)}).json()
-        ready = wait(client, pdf["id"], {"ready"})
+        wait(client, pdf["id"], {"ready"})
         article = client.post("/api/jobs/wechat", json={"url": URL}).json()
         wait(client, article["id"], {"waiting_verification"})
         endpoint = f"/api/jobs/{pdf['id']}/publish"
         rejected = client.post(endpoint, json={**PAYLOAD, "review_token": "0" * 64})
-        assert rejected.status_code == 400
+        assert rejected.status_code == 409
         assert "预览内容已变化" in rejected.text
-        accepted = client.post(endpoint, json={**PAYLOAD, "review_token": ready["review_token"]})
+        payload = reviewed_payload(client, pdf["id"], PAYLOAD)
+        accepted = client.post(endpoint, json=payload)
         assert accepted.json()["status"] == "publish_queued"
         assert accepted.json()["content_locked"] is True
         assert service.client.created == 0
-        assert client.post(endpoint, json=PAYLOAD).json()["status"] == "publish_queued"
+        assert client.post(endpoint, json=payload).json()["status"] == "publish_queued"
         service.store.recover()
         restored = service.store.get(pdf["id"])
         assert restored["status"] == "needs_review"

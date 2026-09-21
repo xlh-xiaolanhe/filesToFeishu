@@ -70,7 +70,7 @@ class FeishuClient:
             return self.token
 
     def request(self, method: str, path: str, **kwargs) -> dict:
-        writing = method != "GET"
+        writing = method != "GET" and path != "/drive/v1/metas/batch_query"
         for attempt in range(4):
             try:
                 response = self.client.request(
@@ -153,6 +153,8 @@ class FeishuClient:
                     f"飞书接口失败（HTTP {response.status_code}，code={code}）。"
                     "请检查应用接口权限、知识库成员权限及文件大小。"
                 )
+            if path == "/bot/v3/info":
+                return body.get("data") or {"bot": body.get("bot", {})}
             return body.get("data") or {}
         raise UserError("飞书请求未完成，请稍后重试。")
 
@@ -213,6 +215,32 @@ class FeishuClient:
 
     def block(self, doc_id: str, block_id: str) -> dict:
         return self.request("GET", f"/docx/v1/documents/{doc_id}/blocks/{block_id}")["block"]
+
+    def document_metadata(self, document_id: str) -> dict:
+        """Read metadata in the same application's open-ID namespace for recovery."""
+        data = self.request(
+            "POST",
+            "/drive/v1/metas/batch_query",
+            params={"user_id_type": "open_id"},
+            json={"request_docs": [{"doc_token": document_id, "doc_type": "docx"}]},
+        )
+        matches = [item for item in data.get("metas", []) if item.get("doc_token") == document_id]
+        if len(matches) != 1:
+            raise UserError("无法读取候选文档的完整元数据，未关联该文档。")
+        return matches[0]
+
+    def document_title(self, document_id: str) -> str:
+        document = self.request("GET", f"/docx/v1/documents/{document_id}").get("document", {})
+        if document.get("document_id") != document_id or not isinstance(document.get("title"), str):
+            raise UserError("无法读取文档标题，未确认已有文档与发布计划一致。")
+        return document["title"]
+
+    def bot_open_id(self) -> str:
+        data = self.request("GET", "/bot/v3/info")
+        open_id = data.get("bot", {}).get("open_id")
+        if not isinstance(open_id, str) or not open_id:
+            raise UserError("无法核验当前应用机器人的身份，未关联候选文档。")
+        return open_id
 
     def upload(self, block_id: str, source: Path, kind: str, filename: str = "") -> dict:
         # Use bytes so authentication/rate-limit retries do not reuse an exhausted stream.

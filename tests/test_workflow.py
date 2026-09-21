@@ -6,6 +6,7 @@ from files_to_feishu.app import create_app
 from files_to_feishu.config import Settings
 from files_to_feishu.converters.pdf import render_pages
 from files_to_feishu.models import Element, ParsedDocument
+from tests.helpers import reviewed_payload
 from tests.integrations.feishu.test_publisher import MemoryFeishu
 
 
@@ -40,13 +41,21 @@ def test_upload_preview_publish_duplicate_and_refresh(tmp_path, pdf_bytes):
         assert client.get(f"/api/jobs/{job['id']}/assets/page-1.png").status_code == 200
         assert client.get(f"/api/jobs/{job['id']}/original").content == pdf_bytes
         payload = {"url": "https://test.feishu.cn/wiki/parent", "title": "Test"}
-        assert client.post(f"/api/jobs/{job['id']}/publish", json=payload).status_code == 202
+        assert (
+            client.post(
+                f"/api/jobs/{job['id']}/publish", json=reviewed_payload(client, job["id"], payload)
+            ).status_code
+            == 202
+        )
         saved = wait(client, job["id"], {"succeeded", "failed"})
         assert saved["status"] == "succeeded", saved
         assert "journal" not in saved and "app_id" not in saved
         duplicate = client.post("/api/jobs", files={"file": ("sample.pdf", pdf_bytes)}).json()
         wait(client, duplicate["id"], {"ready"})
-        client.post(f"/api/jobs/{duplicate['id']}/publish", json=payload)
+        client.post(
+            f"/api/jobs/{duplicate['id']}/publish",
+            json=reviewed_payload(client, duplicate["id"], payload),
+        )
         reused = wait(client, duplicate["id"], {"succeeded", "failed"})
         assert reused["url"] == saved["url"]
         assert service.client.created == 1
