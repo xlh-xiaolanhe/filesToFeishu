@@ -15,6 +15,7 @@ from .config import Settings
 from .integrations.feishu import FeishuClient
 from .launcher import server_identity
 from .models import CodeLanguage, UserError
+from .notifications import Notification
 from .service import JobService
 from .store import Store
 
@@ -40,7 +41,11 @@ class CodeRequest(BaseModel):
 
 def public(job: dict) -> dict:
     return {
-        **{k: v for k, v in job.items() if k not in {"journal", "app_id"}},
+        **{k: v for k, v in job.items() if k not in {"journal", "app_id", "notifications"}},
+        "notifications": [
+            Notification.model_validate(receipt).public()
+            for receipt in job.get("notifications", {}).values()
+        ],
         "content_locked": bool(
             job.get("journal") or job.get("document_id") or job["status"] == "publish_queued"
         ),
@@ -118,6 +123,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "models_ready": (settings.docling_artifacts_path / ".ready").is_file(),
             "default_target": settings.feishu_parent_url,
             "max_bytes": settings.max_bytes,
+            "notifications_enabled": settings.feishu_notify_enabled,
         }
 
     @app.get("/")
@@ -168,6 +174,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result["preview"] = parsed.model_dump()
             result["review_token"] = service.review_token(parsed)
         return result
+
+    @app.post("/api/jobs/{job_id}/notifications/{event}/retry", status_code=202)
+    def retry_notification(job_id: str, event: str):
+        get_job(job_id)
+        return public(service.retry_notification(job_id, event))
 
     @app.get("/api/jobs/{job_id}/assets/{name}")
     def asset(job_id: str, name: str):

@@ -33,6 +33,7 @@ function renderQueue() {
     const info = element("div", undefined, "queue-info");
     info.append(element("p", item.requested_title || (item.filename === "公众号文章.zip" ? item.source_url : item.filename) || "未命名任务"));
     info.append(element("p", `${labels[item.status] || item.status}${reviews.has(item.id) ? " · 已核对" : ""}${item.error ? " · " + item.error : ""}`, "muted"));
+    for (const receipt of item.notifications || []) info.append(element("p", notificationLabel(receipt), "muted small"));
     const view = element("button", "打开", "secondary"); view.type = "button";
     view.disabled = pendingAction || savingCode || selecting;
     view.addEventListener("click", () => select(item.id).catch(error => message("error", error.message)));
@@ -56,6 +57,30 @@ async function api(path, options = {}) {
   return data;
 }
 function post(path, data) { return api(path, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)}); }
+function notificationLabel(receipt) {
+  const events = {succeeded:"保存结果",failed:"失败结果",needs_review:"待核对结果"};
+  const states = {pending:"等待发送",sending:"发送中",sent:"已发送",failed:"发送失败",uncertain:"发送结果待核对"};
+  return `${events[receipt.event] || "处理结果"}通知：${states[receipt.status] || receipt.status}`;
+}
+function renderNotifications(item) {
+  const box = $("notifications"); box.replaceChildren();
+  const receipts = item?.notifications || []; box.hidden = !receipts.length;
+  for (const receipt of receipts) {
+    box.append(element("p", notificationLabel(receipt) + (receipt.error ? ` · ${receipt.error}` : "")));
+    if (receipt.status === "failed" && receipt.event === item.status && health?.notifications_enabled) {
+      const retry = element("button", "仅重试通知", "secondary"); retry.type = "button";
+      retry.addEventListener("click", async () => {
+        retry.disabled = true; const id = item.id;
+        try {
+          await post(`/api/jobs/${id}/notifications/${receipt.event}/retry`, {});
+          if (job?.id === id) await refresh();
+        } catch (error) { if (job?.id === id) message("error", error.message); }
+        finally { retry.disabled = false; }
+      });
+      box.append(retry);
+    }
+  }
+}
 function sourceKind() { return job?.source_kind || job?.preview?.source_kind || "pdf"; }
 function setupNotes() {
   if (!health) return;
@@ -326,6 +351,7 @@ async function refresh() {
     if (!hadPreview && job.parsed) invalidateReview();
     $("status").textContent = `${labels[job.status] || job.status} · ${job.progress}`;
     message("error", job.error); message("result", "");
+    renderNotifications(job);
     if (job.status === "succeeded") {
       message("result", "保存成功，正文、附件与目标位置已核对。 ");
       const link = element("a", "打开飞书文档 ↗"); const href = externalUrl(job.url);
@@ -336,7 +362,7 @@ async function refresh() {
     $("original").hidden = sourceKind() === "wechat" && !job.parsed;
     if (!titleEdited && !reviews.has(job.id) && job.preview?.metadata?.title) $("title").value = job.requested_title || job.preview.metadata.title;
     preview(); enable();
-    if (active.has(job.status)) timer = setTimeout(refresh, job.status === "waiting_verification" ? 3000 : 1200);
+    if (active.has(job.status) || (job.notifications || []).some(n => ["pending", "sending"].includes(n.status))) timer = setTimeout(refresh, job.status === "waiting_verification" ? 3000 : 1200);
     else await history();
   } catch (error) { message("error", error.message); timer = setTimeout(refresh, 4000); }
 }

@@ -2,7 +2,7 @@
 
 本地网页工具：批量导入文字型 PDF 或微信公众号文章，逐篇预览、校对确认后，保存为指定飞书知识库父页面下的独立子文档。PDF 附原文件，公众号附离线网页 ZIP。
 
-当前版本：**v0.4.0**。支持每批最多 20 个 PDF 或 20 个文章链接、持久化串行队列、逐篇核对后批量发布，以及一键环境准备和启动。
+当前版本：**v0.5.0**。支持每批最多 20 个 PDF 或 20 个文章链接、持久化串行队列、逐篇核对后批量发布、一键环境准备和启动，以及可选的飞书机器人结果通知。
 
 本 README 是持续维护的完整使用说明。`docs/` 仅保留本地需求、计划、架构和验收档案，不进入 Git；新检出项目无需这些文档即可使用。开发约定见 [AGENTS.md](AGENTS.md)，组件许可见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
@@ -60,6 +60,31 @@ DOCLING_ARTIFACTS_PATH=.models
 | 目标知识库及父页面 | 把同一个应用或机器人加入可编辑成员，允许创建或迁入子页面 |
 
 个人账号能编辑并不代表应用有权限。“检查保存位置”成功只说明能读取节点，仍需知识库编辑权限才能归档。凭证只发送给飞书接口，不发送到公众号站点。
+
+## 飞书机器人结果通知
+
+通知默认关闭。启用后复用 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 对应的企业自建应用，以应用机器人身份给一个指定用户或群发送结果。当前实现为单向通知，不接收聊天命令，不需要公网回调或长连接，也不使用群自定义机器人 Webhook。
+
+1. 在飞书开发者后台为同一应用启用机器人能力，并开通 `im:message:send_as_bot`（以应用的身份发消息），发布应用并完成所需审批。
+2. 私聊接收人需在应用可用范围内，使用该应用对应的用户 `open_id`；也支持 `user_id`、`union_id`、`email`。向群发送时，把机器人加入目标群，使用群 `chat_id`。ID 类型必须与值匹配，知识库节点 ID 不能作为接收人 ID。
+3. 在本地 `.env` 填写以下配置，然后停止并重新运行启动脚本：
+
+```dotenv
+FEISHU_NOTIFY_ENABLED=true
+FEISHU_NOTIFY_RECEIVE_ID_TYPE=open_id
+FEISHU_NOTIFY_RECEIVE_ID=ou_替换为接收人的真实ID
+```
+
+群通知改为 `FEISHU_NOTIFY_RECEIVE_ID_TYPE=chat_id`，接收 ID 填 `oc_...`。接收人配置保存在本地，不返回到网页。接口格式参见飞书官方的[发送消息](https://open.feishu.cn/document/server-docs/im-v1/message/create)和[Python SDK 请求模型](https://github.com/larksuite/oapi-sdk-python/blob/v2_main/lark_oapi/api/im/v1/model/create_message_request_body.py)。
+
+- **成功通知**：仅在飞书正文、素材、原件及知识库位置全部核验完成后发送，包含文档标题、任务 ID、批次 ID（如有）和文档链接。本地转换完成、等待预览确认时不发送成功通知。
+- **失败通知**：已接收任务的转换或发布失败、写入结果不确定时发送简要提醒；详细错误仍在本机页面查看。取消、等待人工验证和尚未创建任务的输入校验错误不通知。不会发送正文、原件、凭证或原始异常日志。
+- 批量任务逐篇通知，每篇仍生成独立文档；同一任务同一种结果只创建一条通知记录，反复核验或重试发布不会重复提醒。失败后最终成功会有一条新的成功通知。启用配置或重启不会追补历史任务。
+- 任务队列和预览上方分别显示通知状态。“已发送”表示飞书接口已确认接收消息，不代表用户已读。通知失败不改变文档处理结果，也不阻断后续任务。
+- 明确被拒绝的发送可以点击“仅重试通知”，不会重新转换或创建文档。修复权限后可直接重试；修改本地配置需重启。已确定的接收人及应用身份不能随重试改变，避免把旧通知发送到其他人。
+- 发送超时、响应不完整或发送中服务中断时标为“发送结果待核对”，不盲目重复发送。发送前中断的记录可在重启后手工重试。重试不会依赖飞书消息去重的时效来假定安全。
+
+本功能的配置与收发链路可用模拟飞书测试验证；真实发送需要有效接收人、机器人能力及消息权限。新配置建议先用一篇测试文档验证收到的链接和接收人，再处理批量任务。
 
 ## 批量使用流程
 
@@ -167,6 +192,7 @@ RUN_BROWSER_TESTS=1 .venv/bin/pytest -q tests/converters/wechat/test_browser.py
 | 代码编辑与跨页来源 | `TEST_CODE_PREVIEW=1 .venv/bin/python -m tests.browser_server` | `node tests/browser_code_smoke.cjs` |
 | 批量输入与发布交互 | `TEST_BATCH_PREVIEW=1 .venv/bin/python -m tests.browser_server` | `node tests/browser_batch_smoke.cjs` |
 | 公众号前端完整交互 | 无需启动项目服务，测试自行创建临时静态服务并模拟 API | `node tests/browser_wechat_smoke.cjs` |
+| 机器人通知状态与独立重试 | 无需启动项目服务，测试自行创建临时静态服务并模拟 API | `node tests/browser_notifications_smoke.cjs` |
 | 标题层级预览 | `TEST_HEADING_PREVIEW=1 .venv/bin/python -m tests.browser_server` | 上传样本，确认文档标题/章节/小节/代码示例为 H1/H2/H3/H4，下一节恢复 H3，确认后模拟发布成功 |
 
 这些模式使用临时数据库和模拟飞书；退出测试服务后临时任务会消失，截图保存在 `output/playwright/`。只有明确要创建真实验收文档时才执行 `RUN_LIVE_TESTS=1 node tests/browser_smoke.cjs`，它会连接 8765 正常服务并写入本地配置的真实父页面；失败任务应在网页历史中续接。

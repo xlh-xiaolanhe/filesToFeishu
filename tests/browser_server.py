@@ -64,6 +64,7 @@ if __name__ == "__main__":
                 feishu_app_id="browser-test",
                 feishu_app_secret="fake-test-secret",
                 feishu_parent_url="https://test.feishu.cn/wiki/parent",
+                feishu_notify_enabled=False,
             )
         )
         app.state.service.client.close()

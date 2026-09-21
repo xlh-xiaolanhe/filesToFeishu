@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 import threading
 import time
@@ -133,7 +134,7 @@ class FeishuClient:
                     scopes = sorted(
                         set(
                             re.findall(
-                                r"\b(?:docx|drive|wiki|docs):[a-z_:]+", str(body.get("msg", ""))
+                                r"\b(?:docx|drive|wiki|docs|im):[a-z_:]+", str(body.get("msg", ""))
                             )
                         )
                     )
@@ -142,12 +143,39 @@ class FeishuClient:
                         f"飞书缺少接口权限（code=99991672）：{needed}。"
                         "请在开发者后台开通权限、发布应用版本并完成管理员审批后重试。"
                     )
+                if path == "/im/v1/messages":
+                    raise UserError(
+                        f"飞书通知被拒绝（HTTP {response.status_code}，code={code}）。"
+                        "请检查机器人能力、消息发送权限、接收人 ID 和应用可用范围；"
+                        "向群发送时需先把机器人加入目标群。"
+                    )
                 raise UserError(
                     f"飞书接口失败（HTTP {response.status_code}，code={code}）。"
                     "请检查应用接口权限、知识库成员权限及文件大小。"
                 )
             return body.get("data") or {}
         raise UserError("飞书请求未完成，请稍后重试。")
+
+    def send_notification(
+        self, receive_id_type: str, receive_id: str, text: str, message_uuid: str
+    ) -> str:
+        """Send once; an absent acknowledgement must not trigger another message."""
+        result = self.request(
+            "POST",
+            "/im/v1/messages",
+            params={"receive_id_type": receive_id_type},
+            json={
+                "receive_id": receive_id,
+                "msg_type": "text",
+                "content": json.dumps({"text": text}, ensure_ascii=False),
+                "uuid": message_uuid,
+            },
+            timeout=15,
+        )
+        message_id = result.get("message_id")
+        if not isinstance(message_id, str) or not message_id:
+            raise UncertainWrite("通知响应缺少消息 ID，请在飞书中核对，未自动重发。")
+        return message_id
 
     def resolve(self, url: str) -> Target:
         host, token = parse_wiki_url(url)

@@ -106,6 +106,20 @@ class Store:
 
     def recover(self):
         for job in self.list():
+            for event, receipt in job.get("notifications", {}).items():
+                if receipt["status"] in {"pending", "sending"}:
+                    sending = receipt["status"] == "sending"
+                    self.update_notification(
+                        job["id"],
+                        event,
+                        {receipt["status"]},
+                        status="uncertain" if sending else "failed",
+                        error=(
+                            "发送时服务中断，结果不确定，请在飞书核对；未自动重发。"
+                            if sending
+                            else "发送前服务中断，可重试通知；未自动补发。"
+                        ),
+                    )
             if job["status"] in ACTIVE:
                 if job.get("source_kind") == "wechat" and job["status"] in {
                     "queued",
@@ -126,3 +140,20 @@ class Store:
                     progress="任务已中断",
                     error="上次运行中断。请核对任务；已解析任务可点击重试，写入前会检查远端状态。",
                 )
+
+    def update_notification(
+        self, job_id: str, event: str, expected: set[str], **changes
+    ) -> dict | None:
+        """Compare-and-set a delivery receipt without changing task or publish checkpoints."""
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            job = json.loads(row[0])
+            receipt = job.get("notifications", {}).get(event)
+            if receipt is None or receipt["status"] not in expected:
+                return None
+            receipt.update(changes)
+            conn.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(job), job_id))
+        return receipt

@@ -13,6 +13,7 @@ from .converters.pdf import DoclingParser, inspect_pdf
 from .converters.wechat import WechatConverter, normalize_url
 from .integrations.feishu import FeishuClient, Publisher
 from .models import Asset, CodeLanguage, ParsedDocument, Target, UncertainWrite, UserError
+from .notifications import EVENT_LABELS, Notification, prepare_notification
 from .store import ACTIVE, RUNNING, Store
 
 
@@ -83,6 +84,104 @@ class JobService:
     def _advance(self) -> None:
         with self.lock:
             self._schedule_locked()
+
+    def finish(self, job_id: str, **changes) -> None:
+        """Save the outcome and pending notification together before attempting delivery."""
+        job = {**self.store.get(job_id), **changes}
+        receipt = prepare_notification(self.settings, job)
+        if receipt:
+            changes["notifications"] = {
+                **job.get("notifications", {}),
+                receipt.event: receipt.model_dump(),
+            }
+        self.store.update(job_id, **changes)
+        if receipt:
+            try:
+                self.executor.submit(self.send_notification, job_id, receipt.event)
+            except RuntimeError:
+                # Shutdown may have started while a conversion was finishing. The persisted
+                # pending receipt remains retryable after restart, without altering the result.
+                logging.getLogger(__name__).warning("job=%s notification remains pending", job_id)
+
+    def send_notification(self, job_id: str, event: str) -> None:
+        receipt = self.store.update_notification(
+            job_id, event, {"pending"}, status="sending", error=""
+        )
+        if not receipt:
+            return
+        notification = Notification.model_validate(receipt)
+        try:
+            if not self.settings.feishu_notify_enabled:
+                raise UserError("通知已关闭，未发送。")
+            if not notification.receive_id or not self.settings.configured:
+                raise UserError("请在 .env 配置通知接收人及飞书应用凭证，重启后重试通知。")
+            if notification.app_id != self.settings.feishu_app_id:
+                raise UserError("应用身份已变化，不能以另一应用重发原通知。")
+            message_id = self.client.send_notification(
+                notification.receive_id_type,
+                notification.receive_id,
+                notification.text,
+                notification.uuid,
+            )
+        except UncertainWrite:
+            self.store.update_notification(
+                job_id,
+                event,
+                {"sending"},
+                status="uncertain",
+                error="通知可能已发送，但未收到确认。请在飞书核对，未自动重发。",
+            )
+        except UserError as exc:
+            self.store.update_notification(
+                job_id, event, {"sending"}, status="failed", error=str(exc)
+            )
+        except Exception:
+            # An unexpected failure can occur after dispatch; do not guess that nothing was sent.
+            self.store.update_notification(
+                job_id,
+                event,
+                {"sending"},
+                status="uncertain",
+                error="通知发送异常，结果不确定。请在飞书核对，未自动重发。",
+            )
+        else:
+            self.store.update_notification(
+                job_id, event, {"sending"}, status="sent", message_id=message_id, error=""
+            )
+
+    def retry_notification(self, job_id: str, event: str) -> dict:
+        with self.lock:
+            job = self.store.get(job_id)
+            if self.closing.is_set() or not self.settings.feishu_notify_enabled:
+                raise UserError("通知未启用或服务正在关闭。")
+            receipt = job.get("notifications", {}).get(event)
+            if job["status"] != event:
+                raise UserError("任务结果已变化，不再重发旧结果通知。")
+            if event not in EVENT_LABELS or not receipt or receipt["status"] != "failed":
+                raise UserError("只有明确发送失败的通知可重试；结果不确定时请先在飞书核对。")
+            if not self.settings.configured or not self.settings.feishu_notify_receive_id.strip():
+                raise UserError("请先配置飞书应用凭证与通知接收人并重启。")
+            if receipt["app_id"] and receipt["app_id"] != self.settings.feishu_app_id:
+                raise UserError("应用身份已变化，不能以另一应用重发原通知。")
+            # Once addressed, a receipt can never be silently rerouted after a config change.
+            if receipt["receive_id"] and (receipt["receive_id"], receipt["receive_id_type"]) != (
+                self.settings.feishu_notify_receive_id.strip(),
+                self.settings.feishu_notify_receive_id_type,
+            ):
+                raise UserError("接收人配置已变化，请恢复原配置后重试原通知。")
+            claimed = self.store.update_notification(
+                job_id,
+                event,
+                {"failed"},
+                status="pending",
+                error="",
+                app_id=self.settings.feishu_app_id,
+                receive_id=self.settings.feishu_notify_receive_id.strip(),
+                receive_id_type=self.settings.feishu_notify_receive_id_type,
+            )
+            if claimed:
+                self.executor.submit(self.send_notification, job_id, event)
+            return self.store.get(job_id)
 
     def receive_wechat(self, url: str, batch_id: str = "") -> dict:
         url = normalize_url(url)
@@ -418,7 +517,7 @@ class JobService:
                     )
                     if self.client.download_digest(attachment["token"]) != original_digest:
                         raise UserError("已有文档的原附件核验失败，请核对远端文档。")
-                    self.store.update(
+                    self.finish(
                         job_id,
                         status="succeeded",
                         progress="已核实并复用已有文档",
@@ -440,7 +539,7 @@ class JobService:
                 job.get("original_digest", job["digest"]),
                 job["filename"],
             )
-            self.store.update(
+            self.finish(
                 job_id,
                 status="succeeded",
                 progress="已保存并核对知识库位置",
@@ -467,7 +566,7 @@ class JobService:
                 diagnostic = diagnostic.replace(secret, "[REDACTED]")
         diagnostic = re.sub(r"(?i)Bearer\s+[^\s'\"]+", "Bearer [REDACTED]", diagnostic)
         logging.getLogger(__name__).warning("job=%s\n%s", job_id, diagnostic[-8000:])
-        self.store.update(
+        self.finish(
             job_id,
             status="needs_review" if isinstance(exc, UncertainWrite) else "failed",
             error=message,
