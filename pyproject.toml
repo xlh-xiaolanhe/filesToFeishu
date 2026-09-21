@@ -1,7 +1,7 @@
 [project]
 name = "files-to-feishu"
 version = "0.2.5"
-description = "Local PDF preview and editable Feishu wiki import"
+description = "Local PDF and WeChat article preview with editable Feishu wiki import"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi>=0.115,<1",
@@ -13,6 +13,8 @@ dependencies = [
   "pypdf>=5,<7",
   "pypdfium2>=4.30,<6",
   "pillow>=11,<13",
+  "beautifulsoup4>=4.13,<5",
+  "playwright>=1.55,<2",
 ]
 
 [project.optional-dependencies]
