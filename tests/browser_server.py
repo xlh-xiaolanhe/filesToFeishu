@@ -11,6 +11,8 @@ from files_to_feishu.config import Settings
 from files_to_feishu.converters.pdf import render_pages
 from files_to_feishu.models import CodeSource, Element, ParsedDocument
 from tests.integrations.feishu.test_publisher import MemoryFeishu
+from tests.test_wechat_workflow import ArticleFixture
+from tests.test_workflow import fixture_parser
 
 
 def code_preview_fixture(source, assets, progress):
@@ -70,4 +72,7 @@ if __name__ == "__main__":
             app.state.service.parser = code_preview_fixture
         if os.getenv("TEST_HEADING_PREVIEW") == "1":
             app.state.service.parser = heading_preview_fixture
+        if os.getenv("TEST_BATCH_PREVIEW") == "1":
+            app.state.service.parser = fixture_parser
+            app.state.service.wechat = ArticleFixture()
         uvicorn.run(app, host="127.0.0.1", port=8766)

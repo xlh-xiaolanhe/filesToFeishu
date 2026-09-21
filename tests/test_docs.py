@@ -71,12 +71,10 @@ def test_current_version_matches_documentation_lock_and_page():
 
 
 def test_usage_confirmation_matches_the_page():
-    if not (ROOT / "docs").exists():
-        pytest.skip("本地 docs 未随 Git 检出，跳过指南文案专项检查")
     page = (ROOT / "src/files_to_feishu/templates/index.html").read_text()
     label = re.search(r'id="confirmed"[^>]*>([^<]+)', page)
     assert label
-    guide = (ROOT / "docs/guides/pdf-to-feishu.md").read_text()
+    guide = (ROOT / "README.md").read_text()
     assert label[1] in guide
 
 
@@ -104,8 +102,7 @@ def test_documentation_checks_work_without_local_archive(tmp_path, monkeypatch):
     test_document_links_and_iteration_status_are_consistent()
     test_current_version_matches_documentation_lock_and_page()
     test_full_validation_instructions_enable_models_and_ocr()
-    with pytest.raises(pytest.skip.Exception, match="本地 docs"):
-        test_usage_confirmation_matches_the_page()
+    test_usage_confirmation_matches_the_page()
 
 
 def test_local_document_paths_are_not_in_git_index_or_active_history():

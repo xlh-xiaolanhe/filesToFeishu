@@ -9,6 +9,7 @@ from .models import UserError
 
 ACTIVE = {
     "queued",
+    "publish_queued",
     "parsing",
     "fetching",
     "waiting_verification",
@@ -17,6 +18,7 @@ ACTIVE = {
     "verifying",
     "archiving",
 }
+RUNNING = ACTIVE - {"queued", "publish_queued"}
 
 
 class Store:
@@ -38,11 +40,14 @@ class Store:
         finally:
             conn.close()
 
-    def create(self, filename: str, digest: str, *, source_kind: str = "pdf") -> dict:
+    def create(
+        self, filename: str, digest: str, *, source_kind: str = "pdf", batch_id: str = ""
+    ) -> dict:
         job = {
             "id": uuid.uuid4().hex,
             "filename": filename,
             "source_kind": source_kind,
+            "batch_id": batch_id,
             "digest": digest,
             "status": "queued",
             "progress": "等待解析",
@@ -89,9 +94,13 @@ class Store:
                 raise KeyError(job_id)
             if job["status"] not in {"ready", "failed", "needs_review", "succeeded"}:
                 raise UserError("当前任务正在处理中，请勿重复保存。")
-            if any(j["status"] in ACTIVE for j in jobs):
-                raise UserError("已有任务正在处理，请等待完成。")
-            job.update(changes, status="publishing", error="", progress="检查发布状态")
+            job.update(
+                changes,
+                status="publish_queued",
+                error="",
+                progress="等待发布",
+                queued_at=datetime.now(UTC).isoformat(),
+            )
             conn.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(job), job_id))
         return job
 

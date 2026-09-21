@@ -13,7 +13,7 @@ from .converters.pdf import DoclingParser, inspect_pdf
 from .converters.wechat import WechatConverter, normalize_url
 from .integrations.feishu import FeishuClient, Publisher
 from .models import Asset, CodeLanguage, ParsedDocument, Target, UncertainWrite, UserError
-from .store import ACTIVE, Store
+from .store import ACTIVE, RUNNING, Store
 
 
 def article_digest(parsed: ParsedDocument) -> str:
@@ -50,18 +50,49 @@ class JobService:
         self.store.get(job_id)
         return self.settings.data_dir / "jobs" / job_id
 
-    def receive_wechat(self, url: str) -> dict:
+    def _check_capacity(self) -> None:
+        if self.closing.is_set():
+            raise UserError("服务正在关闭，请重新启动后再提交任务。")
+        if sum(j["status"] in ACTIVE for j in self.store.list()) >= 50:
+            raise UserError("最多同时保留 50 个待处理任务，请等待队列完成后再提交。")
+
+    def _schedule_locked(self) -> None:
+        """Claim just one durable task; verification keeps ownership until continue/cancel."""
+        if self.closing.is_set():
+            return
+        jobs = self.store.list()
+        if any(j["status"] in RUNNING for j in jobs):
+            return
+        pending = sorted(
+            (j for j in jobs if j["status"] in {"queued", "publish_queued"}),
+            key=lambda j: j.get("queued_at", j["created_at"]),
+        )
+        if not pending:
+            return
+        job = pending[0]
+        if job["status"] == "publish_queued":
+            self.store.update(job["id"], status="publishing", progress="检查发布状态")
+            self.executor.submit(self.publish, job["id"])
+        elif job.get("source_kind", "pdf") == "wechat":
+            self.store.update(job["id"], status="fetching", progress="正在获取公众号文章")
+            self.executor.submit(self.fetch_wechat, job["id"], False)
+        else:
+            self.store.update(job["id"], status="parsing", progress="开始本地转换")
+            self.executor.submit(self.parse, job["id"])
+
+    def _advance(self) -> None:
+        with self.lock:
+            self._schedule_locked()
+
+    def receive_wechat(self, url: str, batch_id: str = "") -> dict:
         url = normalize_url(url)
         with self.lock:
-            if any(j["status"] in ACTIVE for j in self.store.list()):
-                raise UserError("已有任务正在处理，请等待完成或取消文章获取。")
-            job = self.store.create("公众号文章.zip", "", source_kind="wechat")
+            self._check_capacity()
+            job = self.store.create("公众号文章.zip", "", source_kind="wechat", batch_id=batch_id)
             self.folder(job["id"]).mkdir(parents=True)
-            job = self.store.update(
-                job["id"], source_url=url, status="fetching", progress="正在获取公众号文章"
-            )
-            self.executor.submit(self.fetch_wechat, job["id"], False)
-            return job
+            job = self.store.update(job["id"], source_url=url, progress="等待获取公众号文章")
+            self._schedule_locked()
+            return self.store.get(job["id"])
 
     def continue_wechat(self, job_id: str) -> dict:
         with self.lock:
@@ -75,6 +106,10 @@ class JobService:
     def cancel_wechat(self, job_id: str) -> dict:
         with self.lock:
             job = self.store.get(job_id)
+            if job["status"] == "queued":
+                job = self.store.update(job_id, status="cancelled", progress="已取消排队", error="")
+                self._schedule_locked()
+                return job
             if job.get("source_kind") != "wechat" or job["status"] not in {
                 "fetching",
                 "waiting_verification",
@@ -93,6 +128,7 @@ class JobService:
             self.wechat.cancel()
         finally:
             self.store.update(job_id, status="cancelled", progress="已取消获取", error="")
+            self._advance()
 
     def fetch_wechat(self, job_id: str, resume: bool) -> None:
         def progress(message: str) -> None:
@@ -140,6 +176,8 @@ class JobService:
             self.wechat.cancel()
             if self.store.get(job_id)["status"] != "cancelling":
                 self.fail(job_id, exc)
+        finally:
+            self._advance()
 
     def pump_wechat(self, job_id: str) -> None:
         """Dispatch browser validation events without monopolizing the task queue."""
@@ -152,6 +190,7 @@ class JobService:
             # An HTTP cancellation/continuation can be queued during the bounded pump.
             if self.store.get(job_id)["status"] == "waiting_verification":
                 self.fail(job_id, exc)
+                self._advance()
             return
         with self.lock:
             if (
@@ -196,16 +235,17 @@ class JobService:
             raise FileNotFoundError(path.name)
         return path, "application/zip" if article else "application/pdf"
 
-    def receive(self, filename: str, content: bytes) -> dict:
+    def receive(self, filename: str, content: bytes, batch_id: str = "") -> dict:
         filename = Path(filename.replace("\\", "/")).name[:180]
         if not filename.lower().endswith(".pdf"):
             raise UserError("请选择一个 PDF 文件。")
         if len(content) > self.settings.max_bytes:
             raise UserError("文件超过 20 MB 限制。")
         with self.lock:
-            if any(j["status"] in ACTIVE for j in self.store.list()):
-                raise UserError("已有任务正在处理，请等待完成。")
-            job = self.store.create(filename, hashlib.sha256(content).hexdigest())
+            self._check_capacity()
+            job = self.store.create(
+                filename, hashlib.sha256(content).hexdigest(), batch_id=batch_id
+            )
             folder = self.folder(job["id"])
             folder.mkdir(parents=True)
             source = folder / "source.pdf"
@@ -215,8 +255,8 @@ class JobService:
             except UserError as exc:
                 self.fail(job["id"], exc)
                 raise
-            self.executor.submit(self.parse, job["id"])
-        return job
+            self._schedule_locked()
+        return self.store.get(job["id"])
 
     def parse(self, job_id: str):
         def progress(message: str) -> None:
@@ -234,6 +274,8 @@ class JobService:
             self.store.update(job_id, status="ready", progress="请核对预览后保存", parsed=True)
         except Exception as exc:
             self.fail(job_id, exc)
+        finally:
+            self._advance()
 
     def parsed(self, job_id: str) -> ParsedDocument:
         path = self.folder(job_id) / "parsed.json"
@@ -241,12 +283,20 @@ class JobService:
             raise UserError("尚无转换预览，请完成来源获取；中断任务请重新获取或上传。")
         return ParsedDocument.model_validate_json(path.read_text(encoding="utf-8"))
 
-    def submit_publish(self, job_id: str, url: str, title: str, confirmed: bool = False) -> dict:
+    @staticmethod
+    def review_token(parsed: ParsedDocument) -> str:
+        return hashlib.sha256(parsed.model_dump_json().encode("utf-8")).hexdigest()
+
+    def submit_publish(
+        self, job_id: str, url: str, title: str, confirmed: bool = False, review_token: str = ""
+    ) -> dict:
         with self.lock:
             job = self.store.get(job_id)
             if job.get("source_kind") == "wechat" and not job.get("parsed"):
                 raise UserError("文章尚未完整获取，不能发布；请重新获取并核对预览。")
             parsed = self.parsed(job_id)
+            if review_token and review_token != self.review_token(parsed):
+                raise UserError("预览内容已变化，请重新打开任务并核对后发布。")
             if parsed.source_kind == "wechat" and not confirmed:
                 raise UserError("请先核对文章正文、图片和全部转换提示，并勾选确认后发布。")
             if any(
@@ -254,8 +304,9 @@ class JobService:
                 for e in parsed.elements
             ):
                 raise UserError("请先在预览中保存所有代码片段的校对结果。")
-            if job["status"] in {"publishing", "verifying", "archiving"}:
+            if job["status"] in {"publish_queued", "publishing", "verifying", "archiving"}:
                 return job
+            self._check_capacity()
             target = self.client.resolve(url)
             title = title.strip() or Path(job["filename"]).stem
             if job["journal"]:
@@ -279,15 +330,15 @@ class JobService:
                         title += datetime.now().strftime(" %Y%m%d-%H%M%S")
                         break
                 job["requested_title"] = original_title
-            claimed = self.store.claim(
+            self.store.claim(
                 job_id,
                 target=target.model_dump(),
                 app_id=self.settings.feishu_app_id,
                 title=title,
                 requested_title=job["requested_title"],
             )
-            self.executor.submit(self.publish, job_id)
-        return claimed
+            self._schedule_locked()
+        return self.store.get(job_id)
 
     def save_code(self, job_id: str, index: int, text: str, language: CodeLanguage):
         with self.lock:
@@ -398,6 +449,8 @@ class JobService:
             )
         except Exception as exc:
             self.fail(job_id, exc)
+        finally:
+            self._advance()
 
     def fail(self, job_id: str, exc: Exception):
         message = (

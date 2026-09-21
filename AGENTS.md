@@ -2,19 +2,20 @@
 
 ## 项目与入口
 
-- 本项目是本机预览、校对后导入飞书知识库的工具；支持文字型 PDF 和单篇微信公众号文章。技术栈为 Python 3.12、FastAPI、Pydantic、SQLite、Docling、macOS Vision、Beautiful Soup 和 Playwright，前端为原生 HTML/CSS/JavaScript。
-- 当前版本与验证命令以 [README](README.md) 为入口；本地 `docs/guides/pdf-to-feishu.md`、`docs/guides/wechat-to-feishu.md` 和 `docs/architecture/input-formats.md` 提供详细使用与扩展说明。`docs/` 仅在本地维护，不进入 Git；新检出环境没有该目录是正常情况，启动及基础验证不得依赖它。
-- 首次准备使用 `uv sync --extra parser --locked`，按 README 准备模型与本地配置。日常运行 `./start.sh`，访问 `http://127.0.0.1:8765`；保持单进程、单后台执行线程，不启用多个 worker 或自动重载去重放任务。
+- 本项目是本机预览、校对后导入飞书知识库的工具；支持文字型 PDF 和微信公众号文章，支持批量输入和逐篇确认后的批量发布。技术栈为 Python 3.12、FastAPI、Pydantic、SQLite、Docling、macOS Vision、Beautiful Soup 和 Playwright，前端为原生 HTML/CSS/JavaScript。
+- [README](README.md) 是当前版本、完整使用说明、启动、配置、故障处理和验证命令的唯一维护入口；本地指南只指向 README，架构与验收记录归档在 `docs/`。`docs/` 不进入 Git，新检出环境没有该目录是正常情况。
+- 首次及升级运行 `./start.sh`（macOS 可双击 `start.command`），同步锁定依赖、准备缺失模型与 Chromium 并打开网页；已有配置不得覆盖。已准备环境用 `--no-setup`，只用公众号可用 `--wechat-only`。保持单进程、单后台执行线程，不用多 worker 或自动重载。
 
 ## 架构边界与功能演进
 
-- `app.py` 负责 HTTP 校验与响应；`service.py` 负责任务编排；`store.py` 负责 SQLite 与检查点；`models.py`、`config.py` 放共享内容模型和配置。不要把解析、飞书业务或持久化细节塞进路由、模板或前端。
+- `launcher.py` 和启动脚本负责环境准备与实例识别，修改依赖前先检查已有服务；`app.py` 负责 HTTP 校验与响应；`service.py` 负责任务编排；`store.py` 负责 SQLite 与检查点；`models.py`、`config.py` 放共享内容模型和配置。不要把解析、飞书业务或持久化细节塞进路由、模板或前端。
 - `converters/<格式>/` 只处理来源获取、解析和内容规范化，输出 `ParsedDocument` 及本地素材；不得依赖飞书、网页或任务数据库。纯转换规则优先写成可独立测试的函数，将文件、网络和模型调用放在明确的边界。
 - `integrations/feishu/` 消费共享模型，封装鉴权、写入、核验和归档；不得导入 Docling、Vision 或具体转换器。外部调用通过客户端边界替换测试，避免复制发布流程。
 - 新格式按 `converters/<格式>/` 与 `tests/converters/<格式>/` 成对归档，通用能力放在实际使用它的公共模块；第二种来源落地时再抽取必要接口，不预建未使用的插件框架或注册表。
 - 新来源先明确输入、来源元数据、素材/原件、去重与预览规则。现有 `page/bbox/page_images` 带 PDF 语义，不能给网页伪造页号来复用；演进共享模型时必须兼容历史 JSON、数据库任务和已有发布日志。
 - 不随意改动 `original-pdf:*` 等持久化检查点键。确需变更时提供兼容读取或明确迁移，并测试旧任务恢复、重复导入和中断续接。
 - 公众号验证窗口使用独立临时 Playwright 会话，所有操作归属单后台线程；不读取个人浏览器配置或保存登录凭证。取消和重启不能自动重放获取。素材访问只能来自当前任务清单，外链、重定向和浏览器请求都需校验；离线 ZIP 与页面预览不得执行来源 HTML。
+- 批次只组织独立任务，不合并来源。任务和 `batch_id` 持久化；转换和发布共用串行队列，验证等待时暂停。重启不自动重放，取消排队项不能关闭其他任务的浏览器。每篇预览单独确认，内容或目标变更使确认失效，发布排队即锁定。
 
 ## 内容与写入约束
 
@@ -46,5 +47,5 @@ git diff --check
 ```
 
 - 每次可跟踪内容改动完成后，都必须创建一个对应的 Git commit，以便后续追踪和回滚；先审查 diff，只暂存本次范围内文件，不撤销、覆盖或顺手提交用户的其他修改。仅更新本地文档不提交文档或制造空提交。
-- 产品迭代在本地成对维护 `docs/requirements/<版本>.md`、`docs/plans/<版本>.md` 并补验证记录；同步本地指南、功能索引与版本索引，交付快照保留。不要用 `git add -f` 提交 `docs/`；根目录 README、AGENTS.md 和源码测试仍跟踪，需提供无 docs 也能使用的入口。纯文档/规则收尾不虚增产品版本。
+- 产品迭代在本地成对维护 `docs/requirements/<版本>.md`、`docs/plans/<版本>.md` 并补验证记录；同步 README 使用说明、本地功能索引与版本索引，交付快照保留。不要用 `git add -f` 提交 `docs/`；根目录 README、AGENTS.md 和源码测试仍跟踪，需提供无 docs 也能使用的入口。纯文档/规则收尾不虚增产品版本。
 - `.env`、`.data/`、`.models/`、`.venv/`、`docs/` 和生成产物不进 Git。不把任务数据库、原件或恢复现场当缓存删除；清理只执行用户确认的具体范围，之后核对保留项和服务状态。

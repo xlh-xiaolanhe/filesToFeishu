@@ -45,3 +45,18 @@
 .converted strong { font-weight: 700; }
 .converted li > ul, .converted li > ol { margin-top: 6px; margin-bottom: 6px; }
 @media(max-width:700px) { .article-preview { padding: 16px; } .preview-heading a { overflow-wrap: anywhere; } }
+
+#article-url { width: 100%; resize: vertical; padding: 11px; border: 1px solid #d7e0db; border-radius: 7px; font: inherit; color: #233b39; }
+#queue-panel { padding: 20px 24px; margin-bottom: 22px; }
+.queue-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.queue-heading h2 { margin: 0 auto 0 0; }
+.queue-heading label { margin: 0; }
+#batch-filter { width: auto; max-width: 100%; }
+#queue-list { max-height: 300px; overflow: auto; }
+.queue-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid #edf1ed; }
+.queue-row .queue-info { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.queue-row .queue-info p { margin: 2px 0; }
+.queue-row button { width: auto; flex-shrink: 0; padding: 8px 12px; }
+.queue-row[aria-current="true"] { background: #f1f7f2; }
+#publish-batch { width: auto; }
+@media(max-width:700px) { #queue-panel { padding: 16px; } .queue-row { flex-wrap: wrap; } }

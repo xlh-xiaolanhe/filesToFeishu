@@ -2,8 +2,9 @@ import fcntl
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -12,6 +13,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import Settings
 from .integrations.feishu import FeishuClient
+from .launcher import server_identity
 from .models import CodeLanguage, UserError
 from .service import JobService
 from .store import Store
@@ -23,10 +25,12 @@ class PublishRequest(BaseModel):
     url: str = Field(max_length=2048)
     title: str = Field(default="", max_length=200)
     confirmed: bool = False
+    review_token: str = Field(default="", pattern=r"^(?:[a-f0-9]{64})?$")
 
 
 class ArticleRequest(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
+    batch_id: str = Field(default="", pattern=r"^(?:[a-f0-9]{32})?$")
 
 
 class CodeRequest(BaseModel):
@@ -37,7 +41,9 @@ class CodeRequest(BaseModel):
 def public(job: dict) -> dict:
     return {
         **{k: v for k, v in job.items() if k not in {"journal", "app_id"}},
-        "content_locked": bool(job.get("journal") or job.get("document_id")),
+        "content_locked": bool(
+            job.get("journal") or job.get("document_id") or job["status"] == "publish_queued"
+        ),
     }
 
 
@@ -107,6 +113,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/health")
     def health():
         return {
+            **server_identity(settings),
             "feishu_configured": settings.configured,
             "models_ready": (settings.docling_artifacts_path / ".ready").is_file(),
             "default_target": settings.feishu_parent_url,
@@ -122,10 +129,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return service.client.resolve(body.url)
 
     @app.post("/api/jobs", status_code=202)
-    def upload(file: UploadFile):
+    def upload(
+        file: UploadFile,
+        batch_id: Annotated[str, Form(pattern=r"^(?:[a-f0-9]{32})?$")] = "",
+    ):
         try:
             return public(
-                service.receive(file.filename or "", file.file.read(settings.max_bytes + 1))
+                service.receive(
+                    file.filename or "", file.file.read(settings.max_bytes + 1), batch_id
+                )
             )
         finally:
             file.file.close()
@@ -136,7 +148,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/jobs/wechat", status_code=202)
     def article(body: ArticleRequest):
-        return public(service.receive_wechat(body.url))
+        return public(service.receive_wechat(body.url, body.batch_id))
 
     @app.post("/api/jobs/{job_id}/continue", status_code=202)
     def continue_article(job_id: str):
@@ -152,7 +164,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def job(job_id: str):
         result = public(get_job(job_id))
         if result.get("parsed"):
-            result["preview"] = service.parsed(job_id).model_dump()
+            parsed = service.parsed(job_id)
+            result["preview"] = parsed.model_dump()
+            result["review_token"] = service.review_token(parsed)
         return result
 
     @app.get("/api/jobs/{job_id}/assets/{name}")
@@ -176,7 +190,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/jobs/{job_id}/publish", status_code=202)
     def publish(job_id: str, body: PublishRequest):
         get_job(job_id)
-        return public(service.submit_publish(job_id, body.url, body.title, body.confirmed))
+        return public(
+            service.submit_publish(job_id, body.url, body.title, body.confirmed, body.review_token)
+        )
 
     @app.post("/api/jobs/{job_id}/code/{index}")
     def save_code(job_id: str, index: int, body: CodeRequest):

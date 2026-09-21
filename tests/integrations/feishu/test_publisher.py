@@ -24,6 +24,7 @@ class MemoryFeishu:
         self.created = 0
         self.sequence = 0
         self.target = None
+        self.nodes = {}
         self.fail_upload = False
         self.lost_response = False
         self.parent = "parent"
@@ -96,7 +97,9 @@ class MemoryFeishu:
             return {"block": block}
         if path.endswith("move_docs_to_wiki"):
             self.target = body["obj_token"]
-            return {"wiki_token": "child"}
+            token = "child" if not self.nodes else f"child-{self.target}"
+            self.nodes[token] = self.target
+            return {"wiki_token": token}
         raise AssertionError((method, path, kwargs))
 
     def upload(self, block_id, source, kind, filename=""):
@@ -117,11 +120,13 @@ class MemoryFeishu:
         return copy.deepcopy(self.data[block_id])
 
     def node(self, token, obj_type="wiki"):
+        if obj_type == "docx":
+            token = next(key for key, doc in self.nodes.items() if doc == token)
         return {
-            "node_token": "child",
+            "node_token": token,
             "space_id": "space",
             "parent_node_token": self.parent,
-            "obj_token": self.target,
+            "obj_token": self.nodes[token],
         }
 
     def resolve(self, url):

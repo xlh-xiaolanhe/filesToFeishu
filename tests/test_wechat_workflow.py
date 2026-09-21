@@ -1,10 +1,12 @@
 import hashlib
+import io
 import threading
 import time
 from zipfile import ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from files_to_feishu.app import create_app
 from files_to_feishu.config import Settings
@@ -55,7 +57,12 @@ class ArticleFixture:
     def result(self, url, folder):
         assets = folder / "assets"
         assets.mkdir(exist_ok=True)
-        content = b"GIF89a-original-fixture"
+        buffer = io.BytesIO()
+        frames = [Image.new("RGB", (64, 32), color) for color in ("#246754", "#91bcb0")]
+        frames[0].save(
+            buffer, format="GIF", save_all=True, append_images=frames[1:], duration=200, loop=0
+        )
+        content = buffer.getvalue()
         (assets / "image-1.gif").write_bytes(content)
         (assets / "not-in-manifest.png").write_bytes(b"private")
         with ZipFile(folder / "source.zip", "w") as archive:
@@ -156,7 +163,9 @@ def test_challenge_continue_cancel_and_thread_ownership(article_app):
     wait(client, job["id"], {"waiting_verification"})
     assert "pump" in service.wechat.calls
     assert client.get(f"/api/jobs/{job['id']}/original").status_code == 404
-    assert client.post("/api/jobs/wechat", json={"url": URL}).status_code == 400
+    queued = client.post("/api/jobs/wechat", json={"url": URL}).json()
+    assert queued["status"] == "queued"
+    assert client.post(f"/api/jobs/{queued['id']}/cancel").status_code == 202
     assert client.post(f"/api/jobs/{job['id']}/continue").status_code == 202
     wait(client, job["id"], {"ready"})
     second = client.post("/api/jobs/wechat", json={"url": URL}).json()

@@ -9,20 +9,29 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <header><div class="brand">纸页 <span>→</span> 知识库</div><span class="badge">本地转换 · v0.3.0</span></header>
+  <header><div class="brand">纸页 <span>→</span> 知识库</div><span class="badge">本地转换 · v0.4.0</span></header>
   <main>
     <section class="intro"><p class="eyebrow">FILES TO FEISHU</p><h1>让文档，成为可编辑的知识。</h1><p>导入 PDF 或微信公众号文章，核对完整内容后保存到指定飞书知识库。文字、代码与图片按原文顺序保留，原件随文档附上。</p></section>
     <div id="setup" class="notice" role="status" hidden></div>
+    <section id="queue-panel" class="panel" hidden aria-label="批量任务队列">
+      <div class="queue-heading"><h2>任务队列</h2><label for="batch-filter">查看批次</label><select id="batch-filter"><option value="">全部任务</option></select></div>
+      <p id="queue-summary" class="muted" role="status"></p>
+      <div id="queue-list"></div>
+      <div id="batch-message" class="notice" role="status" hidden></div>
+      <p class="muted small">逐篇打开预览并勾选核对确认，再统一保存到下方填写的知识库父页面。刷新后需重新确认；等待验证时队列暂停。</p>
+      <button id="publish-batch" type="button" disabled>保存本批已确认任务（0）</button>
+    </section>
     <div class="workspace">
       <aside class="panel controls">
         <h2><span class="step">1</span> 选择来源与位置</h2>
         <label for="source-kind">内容来源</label>
         <select id="source-kind"><option value="pdf">PDF 文件</option><option value="wechat">微信公众号文章</option></select>
         <form id="upload-form">
-          <div id="pdf-input"><label class="drop" for="file"><strong>选择一个文字型 PDF</strong><span>最大 20 MB · 100 页</span><input id="file" type="file" accept="application/pdf,.pdf" required></label></div>
+          <div id="pdf-input"><label class="drop" for="file"><strong>选择一个或多个文字型 PDF</strong><span>每个最大 20 MB · 100 页 · 每批最多 20 个</span><input id="file" type="file" accept="application/pdf,.pdf" multiple required></label></div>
           <div id="wechat-input" hidden>
-            <label for="article-url">微信公众号文章链接</label>
-            <input id="article-url" type="url" maxlength="4096" placeholder="https://mp.weixin.qq.com/s/…" disabled>
+            <label for="article-url">微信公众号文章链接（每行一个）</label>
+            <textarea id="article-url" rows="5" maxlength="42000" placeholder="https://mp.weixin.qq.com/s/…&#10;https://mp.weixin.qq.com/s/…" disabled></textarea>
+            <p class="muted small">每批最多 20 篇，重复链接只提交一次；各篇生成独立文档。</p>
             <p class="muted small">获取正文与图片后先预览；需要验证时可完成验证后继续。</p>
           </div>
           <button id="convert" type="submit">开始本地转换</button>
