@@ -155,6 +155,7 @@ def from_layout(
                 for i in set(matches):
                     region = code_regions[i]
                     if i not in emitted_codes:
+                        assert region.page is not None  # Extracted PDF regions always have a page.
                         elements.append(region)
                         covered[region.page] = covered.get(region.page, "") + region.text
                         emitted_codes.add(i)

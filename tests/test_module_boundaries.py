@@ -77,13 +77,29 @@ def test_existing_serialized_job_remains_readable_after_reorganization(tmp_path)
         assert (
             parsed.model_dump(
                 exclude={
+                    "source_kind": True,
+                    "metadata": True,
+                    "assets": True,
                     "elements": {
-                        "__all__": {"language", "code_origin", "code_reviewed", "code_sources"}
-                    }
+                        "__all__": {
+                            "language",
+                            "code_origin",
+                            "code_reviewed",
+                            "code_sources",
+                            "runs",
+                            "table_runs",
+                            "list_depth",
+                            "list_start",
+                            "web_locator",
+                        }
+                    },
                 }
             )
             == legacy
         )
+        assert parsed.source_kind == "pdf"
+        assert parsed.metadata.url == ""
+        assert parsed.assets == []
         assert parsed.elements[0].language == "plaintext"
         assert parsed.elements[0].code_origin == ""
         assert parsed.elements[0].code_reviewed is False

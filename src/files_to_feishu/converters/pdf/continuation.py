@@ -6,6 +6,8 @@ from ...models import CodeSource, Element, Notice, ParsedDocument
 
 
 def sources_of(element: Element) -> list[CodeSource]:
+    if element.page is None:
+        raise ValueError("PDF code must have a source page")
     return element.code_sources or [
         CodeSource(page=element.page, asset=element.asset, bbox=element.bbox)
     ]
@@ -84,12 +86,14 @@ def merge_cross_page_code(
     furniture_ids: set[int] | None = None,
 ) -> ParsedDocument:
     """Merge only consecutive body blocks; preserve all margin text outside code."""
+    if parsed.source_kind != "pdf":
+        return parsed
     furniture_ids = furniture_ids or set()
 
     def furniture(item: Element) -> bool:
         if id(item) in furniture_ids:
             return True
-        if item.kind != "text" or len(item.bbox) != 4:
+        if item.kind != "text" or len(item.bbox) != 4 or item.page is None:
             return False
         height = sizes.get(item.page, (0, 0))[1]
         at_margin = height > 0 and (item.bbox[3] <= height * 0.08 or item.bbox[1] >= height * 0.92)

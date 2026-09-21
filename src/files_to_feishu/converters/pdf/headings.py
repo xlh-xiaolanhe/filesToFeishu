@@ -16,7 +16,7 @@ def heading_sizes(headings: list[Element], source: Path | None) -> dict[int, flo
     if source is None:
         return sizes
     with pdfium.PdfDocument(source) as pdf:
-        for number in sorted({e.page for e in headings}):
+        for number in sorted({e.page for e in headings if e.page is not None}):
             page = pdf[number - 1]
             try:
                 height = page.get_height()
